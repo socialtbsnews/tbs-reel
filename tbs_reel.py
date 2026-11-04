@@ -56,6 +56,36 @@ MOTION = {"zoom": "Gentle zoom", "none": "Still"}
 PLAY_FPS = 15
 
 
+_REGISTERED: set = set()
+
+
+def use_font_file(path: str) -> bool:
+    """Let this app's text boxes use a font file that is not installed (only for this app)."""
+    if not path or path in _REGISTERED or not os.path.exists(path):
+        return path in _REGISTERED
+    ok = False
+    try:
+        import ctypes
+        if sys.platform.startswith("win"):
+            ok = ctypes.windll.gdi32.AddFontResourceExW(path, 0x10, 0) > 0     # FR_PRIVATE
+        elif sys.platform == "darwin":
+            cf = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+            ct = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreText.framework/CoreText")
+            cf.CFURLCreateFromFileSystemRepresentation.restype = ctypes.c_void_p
+            cf.CFURLCreateFromFileSystemRepresentation.argtypes = [ctypes.c_void_p, ctypes.c_char_p,
+                                                                   ctypes.c_long, ctypes.c_bool]
+            ct.CTFontManagerRegisterFontsForURL.restype = ctypes.c_bool
+            ct.CTFontManagerRegisterFontsForURL.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p]
+            raw = path.encode("utf-8")
+            url = cf.CFURLCreateFromFileSystemRepresentation(None, raw, len(raw), False)
+            ok = bool(ct.CTFontManagerRegisterFontsForURL(url, 1, None))        # this app only
+    except Exception:
+        ok = False
+    if ok:
+        _REGISTERED.add(path)
+    return ok
+
+
 def load_settings() -> ReelSettings:
     s = ReelSettings()
     try:
@@ -199,7 +229,7 @@ class App:
         self.head = tk.Text(left, height=4, wrap="word", bg=PANEL, fg=INK, insertbackground=INK, relief="flat",
                             font=(TEXT_FONT, 13), undo=True, padx=6, pady=5, selectbackground="#3B5A78")
         self.head.tag_configure("hl", foreground=YELLOW_UI)
-        self.head.tag_configure("b", font=(TEXT_FONT, 13, "bold"))
+        self.ui_fonts = {"en": TEXT_FONT, "bn": TEXT_FONT}
         self.head.pack(fill="x")
         self.head.bind("<<Modified>>", self.headline_edited)
         r = tk.Frame(left, bg=BG); r.pack(fill="x", pady=(5, 0))
@@ -226,6 +256,7 @@ class App:
                                   font=("Segoe UI", 9), anchor="w", justify="left", wraplength=200)
         self.font_note.pack(side="left", padx=8, fill="x")
         self.fill_font_menus()
+        self.apply_ui_fonts()
 
     def _build_right(self):
         right = tk.Frame(self.root, bg=BG, width=320)
@@ -347,8 +378,10 @@ class App:
                          activeforeground="#1A0F06", relief="flat", font=FONT, padx=10, pady=4, cursor="hand2")
 
     def _entry(self, parent, var):
-        return tk.Entry(parent, textvariable=var, bg=PANEL, fg=INK, insertbackground=INK, relief="flat",
-                        font=(TEXT_FONT, 11))
+        e = tk.Entry(parent, textvariable=var, bg=PANEL, fg=INK, insertbackground=INK, relief="flat",
+                     font=(TEXT_FONT, 12))
+        self.entries = getattr(self, "entries", []) + [e]
+        return e
 
     def _check(self, parent, text, var, cmd):
         return tk.Checkbutton(parent, text=text, variable=var, command=cmd, bg=BG, fg=INK, font=FONT,
@@ -445,6 +478,7 @@ class App:
         self.families = fams
         rc.set_families(fams)
         self.fill_font_menus()
+        self.apply_ui_fonts()
         mine = [n for n, f in fams.items() if f.source != "built in"]
         found = [n for n in ("BiblioMono", "FF Meta Serif Pro") if n in fams]
         self.font_note.config(text=("Found " + " and ".join(found)) if found else
@@ -468,6 +502,7 @@ class App:
     def font_changed(self):
         self.s.bangla_font = self.bn_menu.get()
         self.s.english_font = self.en_menu.get()
+        self.apply_ui_fonts()
         self.save()
         self.refresh()
 
@@ -514,7 +549,50 @@ class App:
             self.root.after_cancel(self._head_job)
         self._head_job = self.root.after(200, self._headline_commit)
 
+    # ---- show the chosen fonts in the typing boxes too
+    def apply_ui_fonts(self):
+        fams = self.families
+        for key, menu in (("en", self.en_menu), ("bn", self.bn_menu)):
+            f = fams.get(menu.get())
+            name = TEXT_FONT
+            if f is not None:
+                if f.source == "computer":
+                    name = f.name                           # installed: the system already knows it
+                elif use_font_file(f.regular):
+                    use_font_file(f.bold)
+                    name = f.name
+            self.ui_fonts[key] = name
+        en, bn = self.ui_fonts["en"], self.ui_fonts["bn"]
+        self.head.config(font=(en, 14))
+        for tag, fam, weight in (("f_en", en, "normal"), ("f_bn", bn, "normal"),
+                                 ("f_en_b", en, "bold"), ("f_bn_b", bn, "bold")):
+            self.head.tag_configure(tag, font=(fam, 14, weight))
+        self.head.tag_raise("hl")
+        for e in getattr(self, "entries", []):
+            e.config(font=(en, 12))
+        self.retag_fonts()
+
+    def retag_fonts(self):
+        """Give each piece of the headline the Bangla or English font, bold or not."""
+        h = self.head
+        for t in ("f_en", "f_bn", "f_en_b", "f_bn_b"):
+            h.tag_remove(t, "1.0", "end")
+        text = h.get("1.0", "end-1c")
+        start, cur = 0, None
+        for i, ch in enumerate(text + "\0"):
+            if i < len(text):
+                bn = bool(rc.BENGALI.match(ch)) if not rc.NEUTRAL.match(ch) else (cur[0] if cur else False)
+                key = (bn, "b" in h.tag_names(f"1.0+{i}c"))
+            else:
+                key = None
+            if key != cur:
+                if cur is not None and i > start:
+                    h.tag_add("f_%s%s" % ("bn" if cur[0] else "en", "_b" if cur[1] else ""),
+                              f"1.0+{start}c", f"1.0+{i}c")
+                start, cur = i, key
+
     def _headline_commit(self):
+        self.retag_fonts()
         self.s.headline = self.headline_runs()
         self.save()
         self.refresh()
