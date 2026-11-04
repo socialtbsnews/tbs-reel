@@ -1,15 +1,19 @@
 """Core reel-making logic for TBS Reel (no GUI code here).
 
-A reel is a list of items (photos and video clips) turned into one 1080 x 1350
-(4:5) MP4 at 30 fps (H.264 + AAC), using the TBS reel frame:
+A reel is a list of items (photos and video clips) turned into one MP4 at 30 fps
+(H.264 + AAC), in one of two sizes:
+  * 9:16 reel   1080 x 1920
+  * 4:5 post    1080 x 1350
+using the TBS frame:
   * TBS logo top left, date and credit top right,
-  * a dark panel at the bottom with the headline (Bangla and/or English),
-    where any part of the headline can be highlighted in yellow,
-  * the teal strip along the bottom edge.
+  * a dark shade at the bottom (its size and darkness can be changed) with the
+    headline, where any part can be yellow and/or bold, and which can be moved,
+  * the teal strip along the bottom edge (4:5 only).
 
 How it is made:
   1. Each item becomes a short high-quality segment: photos get a gentle zoom,
-     clips are trimmed; the frame is laid on top.
+     clips are trimmed, each can be zoomed in on its subject, faded from or to
+     black, muted, or have bleeps over words; the frame is laid on top.
   2. The segments (and the optional TBS end card) are joined, the music is
      mixed in, and the reel is encoded once at high quality.
 The bundled ffmpeg (from the imageio-ffmpeg package) does the video work.
@@ -27,28 +31,34 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Callable
 
-import fribidi_loader  # noqa: F401  (must come before PIL.ImageFont: Bangla shaping)
+import fribidi_loader  # noqa: F401  (must come before PIL.ImageFont: complex text shaping)
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps, features
 
 import fontlib
 
-W, H, FPS = 1080, 1350, 30
+FPS = 30
 PHOTO_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp", ".bmp"}
 VIDEO_EXT = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm", ".mts", ".m2ts", ".3gp", ".wmv"}
 AUDIO_EXT = {".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".opus", ".wma"}
 
-# ---- the TBS reel frame (measured from the design, 1080 x 1350)
-LOGO_BOX = (64, 69, 78)              # x, y, size of the round logo
-TOP_RIGHT = 1016                     # right edge of the date and credit
-DATE_BASELINE, DATE_SIZE = 102, 30      # sized so November Condensed matches the design
-CREDIT_BASELINE, CREDIT_SIZE = 131, 24
-HEAD_CENTER_Y = 1056                 # middle of the headline block
-HEAD_SIZE = 72                       # headline font size at 100% (shrinks if the text is long)
+# ---- the two TBS frames. The 4:5 one is measured from the design; the 9:16 one from
+#      TBS's published reels (logo and date kept clear of the app buttons at the top).
+LAYOUTS = {
+    "reel": dict(label="9:16 reel  (1080 x 1920)", w=1080, h=1920,
+                 logo=(88, 236, 88), right=992, date=(298, 36), credit=(334, 28),
+                 head_y=0.80, head_size=62, margin=88, shade=30, dark=80, strip=0),
+    "feed": dict(label="4:5 post  (1080 x 1350)", w=1080, h=1350,
+                 logo=(64, 69, 78), right=1016, date=(102, 30), credit=(131, 24),
+                 head_y=0.782, head_size=72, margin=60, shade=30, dark=76, strip=20),
+}
+W, H = 1080, 1350                    # the 4:5 size (kept for old callers)
 HEAD_LINE = 1.32                     # line spacing, as a multiple of the font size
-HEAD_MAX_W = 960                     # widest a headline line may be
 HEAD_MAX_LINES = 3
 WHITE, YELLOW = (255, 255, 255, 255), (255, 246, 54, 255)
+TEAL = (35, 71, 71, 255)
 TOP_WIDE_LIMIT = 1.15                # pictures wider than this (w/h) go "wide at the top" in Auto
+FADE = 0.5                           # seconds of each fade from / to black
+BLEEP_HZ, BLEEP_VOL = 1000, 0.35
 
 if sys.platform.startswith("win"):
     _NO_WINDOW = {"creationflags": 0x08000000}  # CREATE_NO_WINDOW: no black console boxes
@@ -89,25 +99,61 @@ def today_text() -> str:
 # ---------------------------------------------------------------- settings
 @dataclass
 class ReelSettings:
+    layout: str = "reel"          # "reel" = 9:16 (1080 x 1920), "feed" = 4:5 (1080 x 1350)
     photo_secs: float = 3.0       # default length for each new photo
     framing: str = "auto"         # auto / fill / top / fit
     motion: str = "zoom"          # "zoom" = gentle zoom on photos (alternating in / out); "none"
     logo_on: bool = True
     logo_path: str = ""           # empty = built-in TBS logo
     date_text: str = ""           # e.g. "25 OCTOBER | 2026" (empty = today)
-    credit_text: str = "Video: "  # e.g. "Video: Shariar Gaalib" or "ছবি: ..."
+    credit_text: str = "Video: "  # e.g. "Video: Variety"
     headline: list = field(default_factory=list)   # [[text, highlighted, bold], ...]
-    bangla_font: str = ""         # font family for Bangla letters (empty = best available)
-    english_font: str = ""        # font family for English letters
-    top_font: str = ""            # font family for the date and credit (English letters)
+    head_align: str = "center"    # left / center / right
+    head_pos: dict = field(default_factory=dict)   # per layout: [x offset px, centre y as part of height]
+    shade: dict = field(default_factory=dict)      # per layout: [size %, darkness %]
+    bangla_font: str = ""         # (kept so old settings files still load)
+    english_font: str = ""        # font family for the headline
+    top_font: str = ""            # font family for the date and credit
     head_size_pct: float = 100.0  # headline size
     music_path: str = ""
     music_volume_pct: float = 70.0
     clip_sound: bool = True          # keep the sound recorded with video clips
     clip_volume_pct: float = 100.0
+    fade_in: bool = False            # fade from black at the start
+    fade_out: bool = False           # fade to black at the end
+    fade_between: bool = False       # fade through black between clips
+    disclaimer: str = ""             # "" = none, or a key of DISCLAIMERS
+    disclaimer_at: str = "start"     # start / end
+    disclaimer_secs: float = 5.0
     end_card: bool = False           # TBS logo end card
     end_secs: float = 2.5
     out_dir: str = ""
+
+
+def lay(s: ReelSettings) -> dict:
+    return LAYOUTS.get(s.layout, LAYOUTS["reel"])
+
+
+def dims(s: ReelSettings) -> tuple[int, int]:
+    L = lay(s)
+    return L["w"], L["h"]
+
+
+def head_pos(s: ReelSettings) -> tuple[float, float]:
+    """(x offset in pixels, centre of the headline block as a part of the height)."""
+    p = (s.head_pos or {}).get(s.layout)
+    if p and len(p) == 2:
+        return float(p[0]), float(p[1])
+    return 0.0, lay(s)["head_y"]
+
+
+def shade_of(s: ReelSettings) -> tuple[float, float]:
+    """(size: % of the height that is fully dark, darkness %)."""
+    p = (s.shade or {}).get(s.layout)
+    L = lay(s)
+    if p and len(p) == 2:
+        return float(p[0]), float(p[1])
+    return float(L["shade"]), float(L["dark"])
 
 
 @dataclass
@@ -119,6 +165,9 @@ class Item:
     duration: float = 0.0         # video only: full clip length
     has_audio: bool = False       # video only
     meta: dict = field(default_factory=dict)
+    # meta also holds the edits: "zoom", "cx", "cy" (picked subject), "mute",
+    # "bleeps" ([[from, to], ...] in seconds of the original file),
+    # "blurs" ([[x0, y0, x1, y1], ...] boxes as parts of the frame's width and height)
 
     @property
     def name(self) -> str:
@@ -205,6 +254,26 @@ def resolve_framing(framing: str, pic_w: int, pic_h: int) -> str:
     return framing
 
 
+def has_subject(item: Item | None) -> bool:
+    return item is not None and item.meta.get("zoom") is not None
+
+
+def subject_box(src_w: float, src_h: float, out_w: float, out_h: float,
+                zoom: float, cx: float, cy: float) -> tuple[float, float, float, float]:
+    """The part of the source picture (x, y, w, h) that fills the frame when the user
+    has zoomed in on a subject: zoom 1 = as big as fits, cx / cy = its centre (0..1)."""
+    a = out_w / out_h
+    if src_w / src_h > a:
+        ch, cw = src_h, src_h * a
+    else:
+        cw, ch = src_w, src_w / a
+    zoom = max(1.0, zoom)
+    cw, ch = cw / zoom, ch / zoom
+    x = min(max(cx * src_w - cw / 2, 0), src_w - cw)
+    y = min(max(cy * src_h - ch / 2, 0), src_h - ch)
+    return x, y, cw, ch
+
+
 def _cover(img: Image.Image, w: int, h: int) -> Image.Image:
     return ImageOps.fit(img, (w, h), Image.LANCZOS, centering=(0.5, 0.5))
 
@@ -227,6 +296,35 @@ def frame_picture(img: Image.Image, framing: str, w: int = W, h: int = H) -> Ima
     y = 0 if framing == "top" else (h - fh) // 2
     bg.paste(img.resize((fw, fh), Image.LANCZOS), ((w - fw) // 2, y))
     return bg
+
+
+def place_picture(img: Image.Image, item: Item | None, framing: str, w: int, h: int) -> Image.Image:
+    """Frame a picture for this item: its picked subject if it has one, else the framing."""
+    if has_subject(item):
+        x, y, cw, ch = subject_box(img.width, img.height, w, h, item.meta["zoom"],
+                                   item.meta.get("cx", 0.5), item.meta.get("cy", 0.5))
+        return img.resize((w, h), Image.LANCZOS if cw > w else Image.BICUBIC, box=(x, y, x + cw, y + ch))
+    return frame_picture(img, framing, w, h)
+
+
+def picture_filter(item: Item, framing: str, w: int, h: int, fps: int) -> str:
+    """ffmpeg filter (input [0:v] -> output [pic]) that frames a clip the same way."""
+    if has_subject(item):
+        sw, sh = item.meta.get("width") or 16, item.meta.get("height") or 9
+        x, y, cw, ch = subject_box(sw, sh, w, h, item.meta["zoom"], item.meta.get("cx", 0.5),
+                                   item.meta.get("cy", 0.5))
+        return (f"[0:v]fps={fps},crop=trunc(iw*{cw / sw:.5f}/2)*2:trunc(ih*{ch / sh:.5f}/2)*2:"
+                f"iw*{x / sw:.5f}:ih*{y / sh:.5f},scale={w}:{h},setsar=1[pic]")
+    mode = resolve_framing(framing, item.meta.get("width", 0), item.meta.get("height", 0))
+    if mode == "fill":
+        return f"[0:v]fps={fps},scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},setsar=1[pic]"
+    y = "0" if mode == "top" else "(H-h)/2"
+    sw, sh = max(8, w // 8), max(8, h // 8)
+    return (f"[0:v]fps={fps},split[a][b];"
+            f"[a]scale={sw}:{sh}:force_original_aspect_ratio=increase,crop={sw}:{sh},"
+            f"gblur=sigma=6,scale={w}:{h},eq=brightness=-0.09[bg];"
+            f"[b]scale={w}:{h}:force_original_aspect_ratio=decrease:force_divisible_by=2[fg];"
+            f"[bg][fg]overlay=(W-w)/2:{y},setsar=1[pic]")
 
 
 # ---------------------------------------------------------------- the frame overlay
@@ -266,10 +364,10 @@ def _font_file(path: str, size: int):
 @lru_cache(maxsize=64)
 def _balance(path: str, bangla: bool) -> float:
     """Fonts differ in how big their letters are for the same point size. Scale each so
-    Bangla and English letters look the same size whatever fonts are picked."""
+    letters look the same size whatever fonts are picked."""
     try:
         f = ImageFont.truetype(path, 100, layout_engine=LAYOUT)
-        box = f.getbbox("\u0995" if bangla else "H")
+        box = f.getbbox("ক" if bangla else "H")
         h = box[3] - box[1]
         return max(0.8, min(1.35, (62 if bangla else 71) / h)) if h > 0 else 1.0
     except Exception:
@@ -292,7 +390,7 @@ def headline_font(size: int, bangla: bool = True, bold: bool = True, s: "ReelSet
     return get_font(s.bangla_font if bangla else s.english_font, bangla, bold, size)[0]
 
 
-NEUTRAL = re.compile(r"[^A-Za-z\u0980-\u09FF]")
+NEUTRAL = re.compile(r"[^A-Za-zঀ-৿]")
 
 
 def script_runs(text: str) -> list[tuple[str, bool]]:
@@ -301,7 +399,7 @@ def script_runs(text: str) -> list[tuple[str, bool]]:
     out: list[list] = []
     pending = ""
     for ch in text:
-        if NEUTRAL.match(ch) or ch in "\u200c\u200d":
+        if NEUTRAL.match(ch) or ch in "‌‍":
             if out:
                 out[-1][0] += ch
             else:
@@ -373,9 +471,31 @@ def _logo(path: str) -> Image.Image | None:
         return None
 
 
-@lru_cache(maxsize=1)
-def _frame_bg() -> Image.Image:
-    return Image.open(resource("assets", "frame.png")).convert("RGBA")
+@lru_cache(maxsize=16)
+def shade_layer(w: int, h: int, size_pct: float, dark_pct: float, strip: int) -> Image.Image:
+    """The dark shade at the bottom: fully dark for size_pct of the height, with a soft
+    fade above it, and the teal strip along the bottom edge (4:5)."""
+    layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    solid = h * max(0.0, min(90.0, size_pct)) / 100
+    if solid > 0 and dark_pct > 0:
+        top = h - solid
+        ramp = max(80.0, solid * 0.8)
+        amax = 255 * max(0.0, min(100.0, dark_pct)) / 100
+        col = Image.new("L", (1, h), 0)
+        px = col.load()
+        for y in range(h):
+            if y >= top:
+                a = 1.0
+            elif y > top - ramp:
+                p = (y - (top - ramp)) / ramp
+                a = p * p * (3 - 2 * p)
+            else:
+                a = 0.0
+            px[0, y] = round(amax * a)
+        layer.putalpha(col.resize((w, h)))
+    if strip:
+        layer.paste(TEAL, (0, h - strip, w, h))
+    return layer
 
 
 def _norm_runs(runs) -> list[tuple[str, bool, bool]]:
@@ -433,26 +553,60 @@ def _wrap(lines, width_of, max_w):
 
 def layout_headline(s: "ReelSettings"):
     """Font size and wrapped lines (as spans); shrinks until it fits in HEAD_MAX_LINES lines."""
+    L = lay(s)
+    max_w = L["w"] - 2 * L["margin"]
     lines = _tokens(s.headline)
     if not any(not p[0].isspace() for ln in lines for p in ln):
-        return HEAD_SIZE, []
-    size = round(HEAD_SIZE * max(40.0, min(160.0, s.head_size_pct)) / 100)
+        return L["head_size"], []
+    size = round(L["head_size"] * max(40.0, min(160.0, s.head_size_pct)) / 100)
     while True:
         width_of = lambda ln, sz=size: _spans_width(_spans(ln, s, sz))  # noqa: E731
-        wrapped = _wrap(lines, width_of, HEAD_MAX_W)
-        if (len(wrapped) <= HEAD_MAX_LINES and all(width_of(ln) <= HEAD_MAX_W for ln in wrapped)) or size <= 30:
+        wrapped = _wrap(lines, width_of, max_w)
+        if (len(wrapped) <= HEAD_MAX_LINES and all(width_of(ln) <= max_w for ln in wrapped)) or size <= 30:
             return size, [_spans(ln, s, size) for ln in wrapped]
         size -= 3
 
 
-def overlay(s: ReelSettings, w: int = W, h: int = H) -> Image.Image:
-    """The TBS frame as a transparent layer: dark panel, teal strip, logo,
+def headline_placement(s: ReelSettings):
+    """[(x, baseline, spans)] for each headline line, and the block's box (x0, y0, x1, y1)."""
+    L = lay(s)
+    w, h = L["w"], L["h"]
+    size, lines = layout_headline(s)
+    if not lines:
+        return [], None
+    dx, cy = head_pos(s)
+    pitch = round(size * HEAD_LINE)
+    asc = max(sp.font.getmetrics()[0] for ln in lines for sp in ln)
+    desc = max(sp.font.getmetrics()[1] for ln in lines for sp in ln)
+    top = cy * h - (pitch * (len(lines) - 1) + asc) / 2   # centre the block on cy
+    out, x0s, x1s = [], [], []
+    for i, spans in enumerate(lines):
+        lw = _spans_width(spans)
+        if s.head_align == "left":
+            x = L["margin"]
+        elif s.head_align == "right":
+            x = w - L["margin"] - lw
+        else:
+            x = (w - lw) / 2
+        x += dx
+        out.append((x, top + asc + i * pitch, spans))
+        x0s.append(x)
+        x1s.append(x + lw)
+    box = (min(x0s), top, max(x1s), top + asc + (len(lines) - 1) * pitch + desc)
+    return out, box
+
+
+def overlay(s: ReelSettings, w: int = 0, h: int = 0) -> Image.Image:
+    """The TBS frame as a transparent layer: shade, teal strip, logo,
     date + credit, and the headline with its yellow / bold parts."""
-    layer = _frame_bg().copy()
+    L = lay(s)
+    fw, fh = L["w"], L["h"]
+    size_pct, dark_pct = shade_of(s)
+    layer = shade_layer(fw, fh, round(size_pct, 1), round(dark_pct, 1), L["strip"]).copy()
     if s.logo_on:
         logo = _logo(s.logo_path)
         if logo is not None:
-            x, y, size = LOGO_BOX
+            x, y, size = L["logo"]
             m = logo.resize((size, max(1, round(logo.height * size / logo.width))), Image.LANCZOS)
             sh = Image.new("RGBA", layer.size, (0, 0, 0, 0))
             shadow = Image.new("RGBA", m.size, (0, 0, 0, 0))
@@ -460,46 +614,258 @@ def overlay(s: ReelSettings, w: int = W, h: int = H) -> Image.Image:
             sh.alpha_composite(shadow, (x + 1, y + 2))
             layer.alpha_composite(sh.filter(ImageFilter.GaussianBlur(3)))
             layer.alpha_composite(m, (x, y))
-    for text, base, size in (((s.date_text or today_text()).strip(), DATE_BASELINE, DATE_SIZE),
-                             (s.credit_text.strip(), CREDIT_BASELINE, CREDIT_SIZE)):
+    for text, (base, size) in (((s.date_text or today_text()).strip(), L["date"]),
+                               (s.credit_text.strip(), L["credit"])):
         if text and not text.endswith(":"):
             spans = _spans([(text, False, False)], s, size, top=True)
-            _draw_spans(layer, TOP_RIGHT - _spans_width(spans), base, spans, shadow=True)
-    size, lines = layout_headline(s)
-    if lines:
-        pitch = round(size * HEAD_LINE)
-        asc = max(sp.font.getmetrics()[0] for ln in lines for sp in ln)
-        top = HEAD_CENTER_Y - (pitch * (len(lines) - 1) + asc) / 2   # centre the block
-        for i, spans in enumerate(lines):
-            _draw_spans(layer, (W - _spans_width(spans)) / 2, top + asc + i * pitch, spans)
-    if (w, h) != (W, H):
+            _draw_spans(layer, L["right"] - _spans_width(spans), base, spans, shadow=True)
+    lines, _box = headline_placement(s)
+    for x, base, spans in lines:
+        _draw_spans(layer, x, base, spans, shadow=True)
+    if (w or fw, h or fh) != (fw, fh):
         layer = layer.resize((w, h), Image.LANCZOS)
     return layer
 
 
-def end_card_frame(t: float, total: float, logo_path: str = "") -> Image.Image:
+def end_card_frame(t: float, total: float, logo_path: str = "", w: int = W, h: int = H) -> Image.Image:
     """TBS end card: the logo and wordmark on dark teal-navy, easing in."""
-    img = Image.new("RGB", (W, H), (14, 20, 30))
+    img = Image.new("RGB", (w, h), (14, 20, 30))
     p = min(1.0, t / 0.6)
     ease = 1 - (1 - p) ** 3
     logo = _logo(logo_path)
     if logo is not None:
-        lw = round(W * (0.34 + 0.04 * ease))
+        lw = round(w * (0.34 + 0.04 * ease))
         m = logo.resize((lw, round(logo.height * lw / logo.width)), Image.LANCZOS)
         m.putalpha(m.getchannel("A").point(lambda a: round(a * ease)))
-        img.paste(m, ((W - lw) // 2, round(H * 0.42 - m.height / 2)), m)
+        img.paste(m, ((w - lw) // 2, round(h * 0.42 - m.height / 2)), m)
         try:
             bm = Image.open(resource("assets", "brand.png")).convert("RGBA")
-            bw = round(W * 0.70)
+            bw = round(w * 0.70)
             b = bm.resize((bw, round(bm.height * bw / bm.width)), Image.LANCZOS)
             b.putalpha(b.getchannel("A").point(lambda a: round(a * ease)))
-            img.paste(b, ((W - bw) // 2, round(H * 0.42 + m.height / 2 + 60)), b)
+            img.paste(b, ((w - bw) // 2, round(h * 0.42 + m.height / 2 + 60)), b)
         except Exception:
             pass
     fade_out = max(0.0, min(1.0, (total - t) / 0.4))  # gentle fade to black at the very end
     if fade_out < 1:
         img = img.point(lambda v: int(v * fade_out))
     return img
+
+
+# ---------------------------------------------------------------- fades and bleeps
+def fades_for(items: list[Item], s: ReelSettings, i: int) -> tuple[float, float]:
+    """(fade-in seconds, fade-out seconds) from / to black for item i."""
+    n = len(items)
+    L = items[i].length
+    d = min(FADE, L / 3)
+    fin = d if (i == 0 and s.fade_in) or (i > 0 and s.fade_between) else 0.0
+    last = i == n - 1
+    fout = d if (last and ((s.fade_out and not s.end_card) or (s.fade_between and s.end_card))) or \
+        (not last and s.fade_between) else 0.0
+    return fin, fout
+
+
+def fade_level(pos: float, length: float, fin: float, fout: float) -> float:
+    """How much of the picture shows at pos (1 = all, 0 = black)."""
+    a = 1.0
+    if fin > 0 and pos < fin:
+        a = min(a, pos / fin)
+    if fout > 0 and pos > length - fout:
+        a = min(a, (length - pos) / fout)
+    return max(0.0, min(1.0, a))
+
+
+def bleeps_in(item: Item) -> list[tuple[float, float]]:
+    """Bleeps of this item as (from, to) seconds from the start of the item."""
+    out = []
+    for a, b in item.meta.get("bleeps") or []:
+        a, b = a - item.start, b - item.start
+        if b > 0 and a < item.length:
+            out.append((max(0.0, a), min(item.length, b)))
+    return sorted(out)
+
+
+def uses_clip_sound(item: Item, s: ReelSettings) -> bool:
+    return item.kind == "video" and item.has_audio and s.clip_sound and not item.meta.get("mute")
+
+
+# ---------------------------------------------------------------- blur boxes
+def blur_boxes(item: Item | None, w: int, h: int) -> list[tuple[int, int, int, int]]:
+    """The item's blur boxes in pixels (x, y, width, height), even numbers, inside the frame."""
+    out = []
+    for b in (item.meta.get("blurs") or []) if item else []:
+        x0, y0, x1, y1 = (max(0.0, min(1.0, v)) for v in b)
+        x0, x1 = sorted((x0, x1))
+        y0, y1 = sorted((y0, y1))
+        X, Y = int(x0 * w) // 2 * 2, int(y0 * h) // 2 * 2
+        bw, bh = max(16, int((x1 - x0) * w) // 2 * 2), max(16, int((y1 - y0) * h) // 2 * 2)
+        bw, bh = min(bw, w - X), min(bh, h - Y)
+        if bw >= 8 and bh >= 8:
+            out.append((X, Y, bw - bw % 2, bh - bh % 2))
+    return out
+
+
+def _blur_small(bw: int, bh: int) -> tuple[int, int]:
+    k = max(bw, bh) / 14            # about 14 blocks across: faces and text can't be read
+    return max(2, round(bw / k)), max(2, round(bh / k))
+
+
+def blur_picture(img: Image.Image, item: Item | None) -> Image.Image:
+    """Blur the item's boxes on a framed picture (same look as the made reel)."""
+    boxes = blur_boxes(item, img.width, img.height)
+    if not boxes:
+        return img
+    img = img.copy()
+    for X, Y, bw, bh in boxes:
+        sw, sh = _blur_small(bw, bh)
+        part = img.crop((X, Y, X + bw, Y + bh)).resize((sw, sh), Image.BOX)
+        part = part.filter(ImageFilter.GaussianBlur(0.6)).resize((bw, bh), Image.BICUBIC)
+        img.paste(part, (X, Y))
+    return img
+
+
+def blur_filter(item: Item, w: int, h: int, src: str, dst: str) -> str:
+    """ffmpeg filter [src] -> [dst] that blurs the item's boxes."""
+    boxes = blur_boxes(item, w, h)
+    if not boxes:
+        return f"[{src}]null[{dst}]"
+    n = len(boxes)
+    parts = [f"[{src}]split={n + 1}[bl0]" + "".join(f"[br{k}]" for k in range(n))]
+    cur = "bl0"
+    for k, (X, Y, bw, bh) in enumerate(boxes):
+        sw, sh = _blur_small(bw, bh)
+        parts.append(f"[br{k}]crop={bw}:{bh}:{X}:{Y},scale={sw}:{sh}:flags=area,gblur=sigma=0.6,"
+                     f"scale={bw}:{bh}:flags=bicubic[bq{k}]")
+        parts.append(f"[{cur}][bq{k}]overlay={X}:{Y}[bo{k}]")
+        cur = f"bo{k}"
+    parts.append(f"[{cur}]null[{dst}]")
+    return ";".join(parts)
+
+
+# ---------------------------------------------------------------- disclaimer cards
+RED = (196, 0, 46, 255)
+DISCLAIMERS = {
+    "discretion": dict(
+        label="Viewer discretion 1",
+        title="Viewer Discretion Advised", sub="Content Disclaimer", italic=True, bold=False,
+        body=["This content may include sensitive or distressing topics. It is shared strictly for "
+              "journalistic, educational, or informational purposes based on verified sources. We do not "
+              "endorse, promote, or glorify violence, hatred, discrimination, graphic content, or any form "
+              "of harmful behavior. This material complies with applicable platform Community Guidelines."]),
+    "meta": dict(
+        label="Viewer discretion 2 (Meta)",
+        title="Viewer Discretion Advised", sub="Content Disclaimer", italic=True, bold=False,
+        body=["This content is shared in accordance with Meta Community Standards. It is intended solely for "
+              "journalistic, educational, or informative purposes. All information is based on verified "
+              "sources. We do not endorse, promote, or glorify violence, hatred, discrimination, or any form "
+              "of harmful behavior."]),
+    "copyright": dict(
+        label="Copyright & fair use",
+        title="Copyright & Fair Use Disclaimer", sub="", italic=False, bold=True,
+        body=["This video is shared strictly for news reporting, historical documentation, education, and "
+              "public awareness purposes.",
+              "We do not claim ownership of the video, audio, images, or any third-party materials used herein. "
+              "All copyrights remain with their respective owners.",
+              "The content is used in accordance with fair use principles under applicable copyright laws and "
+              "Meta’s Community Standards, for the purpose of providing context, analysis, and factual "
+              "reporting in the public interest.",
+              "If you are the copyright owner and believe this material has been used incorrectly, please "
+              "contact us directly so we can take appropriate action."]),
+}
+
+
+def _wrap_text(text: str, font, max_w: float) -> list[str]:
+    lines, cur = [], ""
+    for word in text.split():
+        trial = f"{cur} {word}".strip()
+        if cur and font.getlength(trial) > max_w:
+            lines.append(cur)
+            cur = word
+        else:
+            cur = trial
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def _warning_sign(size: int) -> Image.Image:
+    """Red warning triangle with an exclamation mark (drawn 4x larger, then smoothed)."""
+    k = 4
+    S = size * k
+    im = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    t = S * 0.085
+    pts = [(S / 2, t), (S - t, S * 0.87), (t, S * 0.87)]
+    d.line(pts + [pts[0]], fill=RED, width=round(t * 1.25), joint="curve")
+    for p in pts:
+        r = t * 0.62
+        d.ellipse((p[0] - r, p[1] - r, p[0] + r, p[1] + r), fill=RED)
+    bw = S * 0.075
+    d.rounded_rectangle((S / 2 - bw / 2, S * 0.36, S / 2 + bw / 2, S * 0.64), radius=bw / 2, fill=RED)
+    r = bw * 0.62
+    d.ellipse((S / 2 - r, S * 0.72 - r, S / 2 + r, S * 0.72 + r), fill=RED)
+    return im.resize((size, size), Image.LANCZOS)
+
+
+def disclaimer_card(key: str, s: ReelSettings, w: int, h: int) -> Image.Image:
+    """The disclaimer as a full picture (w x h)."""
+    D = DISCLAIMERS[key]
+    k = w / 1080
+    img = Image.new("RGBA", (w, h), (13, 13, 13, 255))
+    title_f = get_font(s.english_font, False, True, round(54 * k))[0]
+    sub_f = get_font(s.english_font, False, False, round(38 * k))[0]
+    body_f, body_stroke = get_font(s.english_font, False, D["bold"], round(34 * k))
+    max_w = w - round(150 * k)
+    pitch = round(34 * k * 1.62)
+    body_lines: list[str | None] = []
+    for para in D["body"]:
+        body_lines += _wrap_text(para, body_f, max_w)
+    sign = _warning_sign(round(230 * k))
+    title_lines = _wrap_text(D["title"], title_f, max_w)
+    tp = round(54 * k * 1.3)
+    gap1, gap2, gap3 = round(56 * k), round(46 * k), round(40 * k)
+    block = sign.height + gap1 + tp * len(title_lines) + (gap2 + round(38 * k) if D["sub"] else 0) + gap3 + \
+        pitch * len(body_lines)
+    y = (h - block) / 2
+    img.alpha_composite(sign, ((w - sign.width) // 2, round(y)))
+    y += sign.height + gap1
+    d = ImageDraw.Draw(img)
+    for ln in title_lines:
+        d.text((w / 2, y + tp * 0.8), ln, font=title_f, fill=RED, anchor="ms")
+        y += tp
+    if D["sub"]:
+        y += gap2
+        d.text((w / 2, y + round(38 * k) * 0.8), D["sub"], font=sub_f, fill=WHITE, anchor="ms")
+        y += round(38 * k)
+    y += gap3
+    sl = 0.2 if D["italic"] else 0.0      # slant the body text like the TBS cards
+    for ln in body_lines:
+        band = Image.new("RGBA", (w, pitch), (0, 0, 0, 0))
+        ImageDraw.Draw(band).text((w / 2, pitch * 0.72), ln, font=body_f, fill=WHITE, anchor="ms",
+                                  stroke_width=body_stroke, stroke_fill=WHITE)
+        if sl:
+            band = band.transform(band.size, Image.AFFINE, (1, sl, -sl * pitch * 0.6, 0, 1, 0), Image.BICUBIC)
+        img.alpha_composite(band, (0, round(y)))
+        y += pitch
+    return img.convert("RGB")
+
+
+def disclaimer_secs(s: ReelSettings) -> float:
+    return max(1.0, float(s.disclaimer_secs)) if s.disclaimer in DISCLAIMERS else 0.0
+
+
+def render_still(img: Image.Image, secs: float, out: str, log: str, cancel=None) -> None:
+    """A still picture as a segment, with a short fade from and to black."""
+    w, h = img.size
+    png = out + ".png"
+    img.save(png)
+    f = min(0.3, secs / 4)
+    cmd = [ffmpeg_exe(), "-y", "-hide_banner", "-loop", "1", "-framerate", str(FPS), "-i", png,
+           "-f", "lavfi", "-t", f"{secs:.3f}", "-i", "anullsrc=r=48000:cl=stereo",
+           "-filter_complex", f"[0:v]format=yuv420p,fade=t=in:st=0:d={f:.3f},"
+                              f"fade=t=out:st={secs - f:.3f}:d={f:.3f}[v]",
+           "-map", "[v]", "-map", "1:a", *_SEG_V, *_SEG_A, "-t", f"{secs:.3f}", out]
+    _run(cmd, log, total_secs=secs, cancel=cancel)
 
 
 # ---------------------------------------------------------------- rendering
@@ -513,10 +879,11 @@ def _ease(x: float) -> float:
 
 def photo_frames(item: Item, s: ReelSettings, index: int):
     """Yield the frames of a photo with an optional gentle zoom (alternating in and out)."""
+    w, h = dims(s)
     n = max(1, round(item.length * FPS))
     zoom = 1.08 if s.motion == "zoom" else 1.0
-    bw, bh = round(W * zoom), round(H * zoom)
-    big = frame_picture(load_photo(item.path), s.framing, bw, bh)
+    bw, bh = round(w * zoom), round(h * zoom)
+    big = place_picture(load_photo(item.path), item, s.framing, bw, bh)
     if zoom == 1.0:
         data = big.tobytes()
         for _ in range(n):
@@ -528,7 +895,7 @@ def photo_frames(item: Item, s: ReelSettings, index: int):
         z = 1 + (zoom - 1) * (p if zoom_in else 1 - p)   # 1 = whole picture, zoom = closest
         cw, ch = bw / z, bh / z
         x0, y0 = (bw - cw) / 2, (bh - ch) / 2
-        yield big.resize((W, H), Image.BICUBIC, box=(x0, y0, x0 + cw, y0 + ch)).tobytes()
+        yield big.resize((w, h), Image.BICUBIC, box=(x0, y0, x0 + cw, y0 + ch)).tobytes()
 
 
 def _run(cmd: list[str], log: str, stdin_frames=None, total_secs: float = 0.0,
@@ -579,57 +946,82 @@ _SEG_V = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "8", "-pix_fmt", "yu
 _SEG_A = ["-c:a", "aac", "-b:a", "256k", "-ar", "48000", "-ac", "2"]
 
 
+def _vfade(fin: float, fout: float, length: float) -> str:
+    f = []
+    if fin > 0:
+        f.append(f"fade=t=in:st=0:d={fin:.3f}")
+    if fout > 0:
+        f.append(f"fade=t=out:st={max(0.0, length - fout):.3f}:d={fout:.3f}")
+    return ",".join(f) or "null"
+
+
+def _afade(fin: float, fout: float, length: float) -> str:
+    f = []
+    if fin > 0:
+        f.append(f"afade=t=in:st=0:d={fin:.3f}")
+    if fout > 0:
+        f.append(f"afade=t=out:st={max(0.0, length - fout):.3f}:d={fout:.3f}")
+    return ("," + ",".join(f)) if f else ""
+
+
 def render_segment(item: Item, s: ReelSettings, index: int, out: str, ov_png: str, log: str,
-                   progress=None, cancel=None) -> None:
+                   progress=None, cancel=None, fades: tuple[float, float] = (0.0, 0.0)) -> None:
     ff = ffmpeg_exe()
+    w, h = dims(s)
+    fin, fout = fades
+    L = item.length
     if item.kind == "photo":
-        cmd = [ff, "-y", "-hide_banner", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}",
+        cmd = [ff, "-y", "-hide_banner", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}",
                "-r", str(FPS), "-i", "-", "-i", ov_png,
-               "-f", "lavfi", "-t", f"{item.length:.3f}", "-i", "anullsrc=r=48000:cl=stereo",
-               "-filter_complex", "[0:v][1:v]overlay=0:0:format=auto,format=yuv420p[v]",
-               "-map", "[v]", "-map", "2:a", *_SEG_V, *_SEG_A, "-t", f"{item.length:.3f}", out]
-        _run(cmd, log, stdin_frames=photo_frames(item, s, index), total_secs=item.length,
+               "-f", "lavfi", "-t", f"{L:.3f}", "-i", "anullsrc=r=48000:cl=stereo",
+               "-filter_complex", f"{blur_filter(item, w, h, '0:v', 'pb')};[pb]{_vfade(fin, fout, L)}[pf];"
+                                  "[pf][1:v]overlay=0:0:format=auto,format=yuv420p[v]",
+               "-map", "[v]", "-map", "2:a", *_SEG_V, *_SEG_A, "-t", f"{L:.3f}", out]
+        _run(cmd, log, stdin_frames=photo_frames(item, s, index), total_secs=L,
              progress=progress, cancel=cancel)
         return
     # video clip
-    mode = resolve_framing(s.framing, item.meta.get("width", 0), item.meta.get("height", 0))
-    if mode == "fill":
-        vf = f"[0:v]fps={FPS},scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},setsar=1[pic]"
-    else:
-        y = "0" if mode == "top" else "(H-h)/2"
-        vf = (f"[0:v]fps={FPS},split[a][b];"
-              f"[a]scale={W // 8}:{H // 8}:force_original_aspect_ratio=increase,crop={W // 8}:{H // 8},"
-              f"gblur=sigma=6,scale={W}:{H},eq=brightness=-0.09[bg];"
-              f"[b]scale={W}:{H}:force_original_aspect_ratio=decrease:force_divisible_by=2[fg];"
-              f"[bg][fg]overlay=(W-w)/2:{y},setsar=1[pic]")
-    vf += ";[pic][1:v]overlay=0:0:format=auto,format=yuv420p[v]"
-    use_clip_audio = s.clip_sound and item.has_audio
-    if use_clip_audio:
+    vf = picture_filter(item, s.framing, w, h, FPS)
+    vf += (f";{blur_filter(item, w, h, 'pic', 'pb')};[pb]{_vfade(fin, fout, L)}[pf];"
+           "[pf][1:v]overlay=0:0:format=auto,format=yuv420p[v]")
+    if uses_clip_sound(item, s):
         vol = s.clip_volume_pct / 100
         vf += (f";[0:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,"
-               f"volume={vol:.3f},apad[a]")
+               f"volume={vol:.3f}")
+        bl = bleeps_in(item)
+        if bl:
+            cond = "+".join(f"between(t\\,{a:.3f}\\,{b:.3f})" for a, b in bl)
+            vf += (f",volume='if({cond}\\,0\\,1)':eval=frame[ca];"
+                   f"sine=frequency={BLEEP_HZ}:sample_rate=48000:duration={L:.3f},"
+                   f"aformat=sample_fmts=fltp:channel_layouts=stereo,"
+                   f"volume='if({cond}\\,{BLEEP_VOL}\\,0)':eval=frame[bp];"
+                   f"[ca][bp]amix=inputs=2:duration=longest:normalize=0")
+        vf += f"{_afade(fin, fout, L)},apad[a]"
         amap = "[a]"
     else:
         amap = "2:a"
-    cmd = [ff, "-y", "-hide_banner", "-ss", f"{item.start:.3f}", "-t", f"{item.length:.3f}", "-i", item.path,
+    cmd = [ff, "-y", "-hide_banner", "-ss", f"{item.start:.3f}", "-t", f"{L:.3f}", "-i", item.path,
            "-loop", "1", "-i", ov_png,
-           "-f", "lavfi", "-t", f"{item.length:.3f}", "-i", "anullsrc=r=48000:cl=stereo",
+           "-f", "lavfi", "-t", f"{L:.3f}", "-i", "anullsrc=r=48000:cl=stereo",
            "-filter_complex", vf, "-map", "[v]", "-map", amap, *_SEG_V, *_SEG_A,
-           "-t", f"{item.length:.3f}", out]
-    _run(cmd, log, total_secs=item.length, progress=progress, cancel=cancel)
+           "-t", f"{L:.3f}", out]
+    _run(cmd, log, total_secs=L, progress=progress, cancel=cancel)
 
 
 def render_end_card(s: ReelSettings, out: str, log: str, progress=None, cancel=None) -> None:
+    w, h = dims(s)
     n = max(1, round(s.end_secs * FPS))
-    frames = (end_card_frame(i / FPS, s.end_secs, s.logo_path).tobytes() for i in range(n))
-    cmd = [ffmpeg_exe(), "-y", "-hide_banner", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}",
+    frames = (end_card_frame(i / FPS, s.end_secs, s.logo_path, w, h).tobytes() for i in range(n))
+    cmd = [ffmpeg_exe(), "-y", "-hide_banner", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}",
            "-r", str(FPS), "-i", "-", "-f", "lavfi", "-t", f"{s.end_secs:.3f}", "-i", "anullsrc=r=48000:cl=stereo",
            "-map", "0:v", "-map", "1:a", *_SEG_V, *_SEG_A, "-t", f"{s.end_secs:.3f}", out]
     _run(cmd, log, stdin_frames=frames, total_secs=s.end_secs, progress=progress, cancel=cancel)
 
 
 def total_length(items: list[Item], s: ReelSettings) -> float:
-    return sum(i.length for i in items) + (s.end_secs if s.end_card and items else 0.0)
+    if not items:
+        return 0.0
+    return sum(i.length for i in items) + (s.end_secs if s.end_card else 0.0) + disclaimer_secs(s)
 
 
 def make_reel(items: list[Item], s: ReelSettings, out_path: str,
@@ -653,6 +1045,14 @@ def make_reel(items: list[Item], s: ReelSettings, out_path: str,
         ov_png = os.path.join(tmp, "overlay.png")
         overlay(s).save(ov_png)
         segs = []
+        dsecs = disclaimer_secs(s)
+        disc = os.path.join(tmp, "disclaimer.mp4")
+        if dsecs:
+            rep(0.0, "Making the disclaimer")
+            render_still(disclaimer_card(s.disclaimer, s, *dims(s)), dsecs, disc, log, cancel)
+            done_secs += dsecs
+            if s.disclaimer_at != "end":
+                segs.append(disc)
         for i, it in enumerate(items):
             seg = os.path.join(tmp, f"seg{i:03d}.mp4")
             label = f"Preparing {i + 1} of {len(items)}: {it.name}"
@@ -660,9 +1060,11 @@ def make_reel(items: list[Item], s: ReelSettings, out_path: str,
             base = done_secs
             render_segment(it, s, i, seg, ov_png, log,
                            progress=lambda f, b=base, L=it.length, m=label: rep(seg_share * (b + f * L) / total, m),
-                           cancel=cancel)
+                           cancel=cancel, fades=fades_for(items, s, i))
             segs.append(seg)
             done_secs += it.length
+        if dsecs and s.disclaimer_at == "end":
+            segs.append(disc)
         if s.end_card:
             seg = os.path.join(tmp, "end.mp4")
             rep(seg_share * done_secs / total, "Making the TBS end card")
@@ -679,9 +1081,10 @@ def make_reel(items: list[Item], s: ReelSettings, out_path: str,
         if music:
             cmd += ["-stream_loop", "-1", "-i", music]
             fade = min(2.0, total / 4)
+            fin = FADE if s.fade_in else 0.3
             mv = s.music_volume_pct / 100
             fc += (f";[{n}:a]atrim=0:{total:.3f},aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,"
-                   f"volume={mv:.3f},afade=t=in:d=0.3,afade=t=out:st={max(0, total - fade):.3f}:d={fade:.3f}[m];"
+                   f"volume={mv:.3f},afade=t=in:d={fin:.3f},afade=t=out:st={max(0, total - fade):.3f}:d={fade:.3f}[m];"
                    f"[ca][m]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.95[a]")
         else:
             fc += ";[ca]anull[a]"
@@ -715,5 +1118,5 @@ def preview_image(item: Item | None, s: ReelSettings, w: int, h: int) -> Image.I
             pic = load_photo(item.path, 1600) if item.kind == "photo" else video_frame(item.path, item.start + 0.05)
         except Exception:
             pic = None
-    img = frame_picture(pic, s.framing, w, h) if pic is not None else Image.new("RGB", (w, h), (70, 78, 86))
+    img = place_picture(pic, item, s.framing, w, h) if pic is not None else Image.new("RGB", (w, h), (70, 78, 86))
     return Image.alpha_composite(img.convert("RGBA"), overlay(s, w, h)).convert("RGB")

@@ -1,37 +1,37 @@
 # TBS Reel (desktop app)
 
-Makes reels in the TBS reel frame: 1080 x 1350 (4:5), 30 fps MP4, from photos and video clips.
+Makes reels in the TBS frame from photos and video clips, as a 30 fps MP4 in two sizes:
+**9:16 reel (1080 x 1920)** or **4:5 post (1080 x 1350)** (pick under SIZE).
 
 **Download:** [Windows](https://github.com/socialtbsnews/tbs-reel/releases/latest/download/TBS-Reel-Windows.exe) ·
 [Mac](https://github.com/socialtbsnews/tbs-reel/releases/latest/download/TBS-Reel-Mac.zip)
 
 ## How to use
 1. **Add clips:** drop photos and video clips onto the window (or click **+ Add photos / videos**).
-   Dropping a music file sets the background music; dropping font files adds them.
-2. **Edit on the timeline** (bottom of the window): click a clip to select it.
-   - **▶ Play** plays it in the preview; the slider (or clicking inside the selected clip) picks a moment.
-   - **✂ Split here** cuts the clip in two at that moment; **Cut start here / Cut end here** trims it.
-   - **✕ Delete clip** removes the selected clip. **↶ Undo** brings back the last change (Ctrl+Z).
-   - Drag a clip along the timeline (or use **◀ Move / Move ▶**) to change the order.
-   - Photos: set how many seconds each stays on screen.
-   - Keys: Space = play/pause, S = split, Delete = delete clip, ← → = one frame.
-3. **Type the text** (left side):
-   - **Date** (starts as today; **Today** resets it) and **Credit**, e.g. `Video: Shariar Gaalib`.
-   - **Headline**: select words and click **Bold** or **Yellow**
-     (click again to take it off; **Plain** clears both). Enter starts a new line; long headlines
-     wrap and shrink a little if they need more than 3 lines.
-   - **Fonts:** pick the headline font and the date/credit font, and the headline size.
-4. **Make reel** and choose where to save.
-
-## The frame
-- TBS logo top left; date and credit top right.
-- Dark panel at the bottom with the headline, and the teal strip along the bottom edge.
-- **Framing:** Auto puts wide (landscape) videos full width at the top and lets tall ones fill the
-  frame. You can also force "Fill the frame", "Full width at the top" or "Whole picture in the middle".
-- **Photos:** gentle zoom (alternating in and out) or still. Default 3 seconds each.
-- **Sound:** clips keep their own sound (can be turned off). Optional music repeats if it is shorter
-  than the reel and fades out at the end.
-- Optional **TBS end card** (off by default).
+   Everything you add is also kept in the **MEDIA** box (bottom left), so you can use it again:
+   double-click a picture there, or drag it onto the timeline. Dropping files on the MEDIA box only
+   stores them. Dropping a music file sets the music; dropping font files adds them.
+2. **Edit on the timeline** (bottom):
+   - Click anywhere to move the playhead (yellow line). **▶ Play** plays the whole reel from there.
+   - Drag a clip to move it. Drag a clip's edge to trim it. Right-click a clip for more.
+   - **✂ Split**, **Trim start**, **Trim end** and **✕ Delete** work at the playhead. **↶ Undo** (Ctrl+Z).
+   - **Mute** takes the sound off one clip. Untick "Use the sound of the video clips" to take it off all.
+   - **Bleep:** put the playhead where the word starts and click **Bleep from here**, then where it ends
+     and click **End bleep here** (works while playing too). The word's sound becomes a beep (red mark).
+     Click **Remove bleep** with the playhead inside a bleep to remove it.
+   - **Timeline − Fit +** zooms the timeline. Keys: Space play, S split, B bleep, M mute, Delete,
+     ← → one frame, Shift+← → one second.
+3. **On the preview:**
+   - Drag the picture to pick the subject, and zoom with the mouse wheel or the **Zoom** slider
+     (e.g. turn a wide 1920 x 1080 video into a 9:16 reel on one person). **Reset picture** undoes it.
+   - **▢ Blur box**, then drag a box over a face or anything sensitive. Drag the box to move it, its corner
+     to resize it, ✕ to remove it. It stays for the whole clip (split the clip to blur only a part).
+   - Drag the **headline** to move it. **Reset place** puts it back.
+4. **Type the text** (left side): **Date**, **Credit**, and the **Headline** (select words and click
+   **Bold** or **Yellow**; **Align** left, centre or right). **Dark shade** size and darkness can be changed.
+5. Right side: framing, photo zoom, music, **Fade to black** (start, end, between clips),
+   **Disclaimer** card (three TBS disclaimers, at the start or end), TBS logo and end card.
+6. **Make reel** and choose where to save.
 
 ## Fonts
 The app looks for fonts installed on the computer and picks TBS's fonts first:
