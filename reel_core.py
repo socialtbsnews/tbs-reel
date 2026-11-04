@@ -385,6 +385,23 @@ def get_font(family: str, bangla: bool, bold: bool, size: int, prefs=None):
     return _font_file(path, size), (max(1, round(size / 60)) if fake else 0)
 
 
+def get_font_style(family: str, bold: bool, italic: bool, size: int, prefs=None):
+    """(font, fake-bold stroke, needs a fake slant) for English text in any style."""
+    f = _family(family, False, prefs)
+    if f is None:
+        return ImageFont.load_default(max(6, size)), 0, italic
+    if not italic:
+        fnt, stroke = get_font(family, False, bold, size, prefs)
+        return fnt, stroke, False
+    path = (f.bold_italic or f.italic) if bold else f.italic
+    fake = bool(bold and not f.bold_italic)
+    if not path:
+        fnt, stroke = get_font(family, False, bold, size, prefs)
+        return fnt, stroke, True
+    size = round(size * _balance(path, False))
+    return _font_file(path, size), (max(1, round(size / 60)) if fake else 0), False
+
+
 def headline_font(size: int, bangla: bool = True, bold: bool = True, s: "ReelSettings | None" = None):
     s = s or ReelSettings()
     return get_font(s.bangla_font if bangla else s.english_font, bangla, bold, size)[0]
@@ -690,18 +707,62 @@ def uses_clip_sound(item: Item, s: ReelSettings) -> bool:
 
 
 # ---------------------------------------------------------------- blur boxes
-def blur_boxes(item: Item | None, w: int, h: int) -> list[tuple[int, int, int, int]]:
-    """The item's blur boxes in pixels (x, y, width, height), even numbers, inside the frame."""
+# Each blur box is {"w", "h": its size as parts of the frame,
+#                   "keys": [[time in the file, centre x, centre y], ...]  (one key = it stays still;
+#                           more keys = it moves smoothly between them, to follow a moving subject),
+#                   "from", "to": times in the file it starts and stops (None = the whole clip)}.
+def blur_list(item: Item | None) -> list[dict]:
     out = []
     for b in (item.meta.get("blurs") or []) if item else []:
-        x0, y0, x1, y1 = (max(0.0, min(1.0, v)) for v in b)
-        x0, x1 = sorted((x0, x1))
-        y0, y1 = sorted((y0, y1))
-        X, Y = int(x0 * w) // 2 * 2, int(y0 * h) // 2 * 2
-        bw, bh = max(16, int((x1 - x0) * w) // 2 * 2), max(16, int((y1 - y0) * h) // 2 * 2)
-        bw, bh = min(bw, w - X), min(bh, h - Y)
-        if bw >= 8 and bh >= 8:
-            out.append((X, Y, bw - bw % 2, bh - bh % 2))
+        if isinstance(b, dict):
+            d = {"w": float(b.get("w", 0.2)), "h": float(b.get("h", 0.1)),
+                 "keys": sorted([list(map(float, k)) for k in b.get("keys") or [[item.start, 0.5, 0.5]]]),
+                 "from": b.get("from"), "to": b.get("to"), "follow": bool(b.get("follow"))}
+        else:                                   # old style [x0, y0, x1, y1]
+            x0, y0, x1, y1 = b
+            d = {"w": abs(x1 - x0), "h": abs(y1 - y0), "keys": [[item.start, (x0 + x1) / 2, (y0 + y1) / 2]],
+                 "from": None, "to": None, "follow": False}
+        out.append(d)
+    return out
+
+
+def blur_centre(d: dict, ft: float) -> tuple[float, float]:
+    keys = d["keys"]
+    if ft <= keys[0][0]:
+        return keys[0][1], keys[0][2]
+    for (t0, x0, y0), (t1, x1, y1) in zip(keys, keys[1:]):
+        if ft < t1:
+            p = (ft - t0) / max(1e-6, t1 - t0)
+            return x0 + (x1 - x0) * p, y0 + (y1 - y0) * p
+    return keys[-1][1], keys[-1][2]
+
+
+def blur_active(d: dict, ft: float) -> bool:
+    return (d["from"] is None or ft >= d["from"] - 1e-3) and (d["to"] is None or ft <= d["to"] + 1e-3)
+
+
+def _blur_px(d: dict, w: int, h: int) -> tuple[int, int]:
+    bw = min(w, max(16, int(d["w"] * w) // 2 * 2))
+    bh = min(h, max(16, int(d["h"] * h) // 2 * 2))
+    return bw, bh
+
+
+def _blur_xy(d: dict, cx: float, cy: float, w: int, h: int) -> tuple[float, float]:
+    bw, bh = _blur_px(d, w, h)
+    return max(0.0, min(w - bw, cx * w - bw / 2)), max(0.0, min(h - bh, cy * h - bh / 2))
+
+
+def blur_boxes(item: Item | None, w: int, h: int, pos: float = 0.0) -> list[tuple[int, int, int, int]]:
+    """Blur boxes showing at pos (seconds into the item), in pixels (x, y, width, height)."""
+    out = []
+    if item is None:
+        return out
+    ft = item.start + pos
+    for d in blur_list(item):
+        if blur_active(d, ft):
+            bw, bh = _blur_px(d, w, h)
+            x, y = _blur_xy(d, *blur_centre(d, ft), w, h)
+            out.append((int(x), int(y), bw, bh))
     return out
 
 
@@ -710,9 +771,9 @@ def _blur_small(bw: int, bh: int) -> tuple[int, int]:
     return max(2, round(bw / k)), max(2, round(bh / k))
 
 
-def blur_picture(img: Image.Image, item: Item | None) -> Image.Image:
+def blur_picture(img: Image.Image, item: Item | None, pos: float = 0.0) -> Image.Image:
     """Blur the item's boxes on a framed picture (same look as the made reel)."""
-    boxes = blur_boxes(item, img.width, img.height)
+    boxes = blur_boxes(item, img.width, img.height, pos)
     if not boxes:
         return img
     img = img.copy()
@@ -724,19 +785,37 @@ def blur_picture(img: Image.Image, item: Item | None) -> Image.Image:
     return img
 
 
+def _piecewise(points: list[tuple[float, float]]) -> str:
+    """ffmpeg expression in t that goes straight from point to point (and stays put outside)."""
+    if len(points) == 1:
+        return f"{points[0][1]:.1f}"
+    expr = f"{points[-1][1]:.1f}"
+    for (t0, v0), (t1, v1) in reversed(list(zip(points, points[1:]))):
+        seg = f"{v0:.1f}+({v1 - v0:.1f})*(t-({t0:.3f}))/{max(1e-3, t1 - t0):.3f}"
+        expr = f"if(lt(t\\,{t1:.3f})\\,{seg}\\,{expr})"
+    return f"if(lt(t\\,{points[0][0]:.3f})\\,{points[0][1]:.1f}\\,{expr})"
+
+
 def blur_filter(item: Item, w: int, h: int, src: str, dst: str) -> str:
-    """ffmpeg filter [src] -> [dst] that blurs the item's boxes."""
-    boxes = blur_boxes(item, w, h)
+    """ffmpeg filter [src] -> [dst] that blurs the item's boxes (moving and timed as set)."""
+    boxes = [d for d in blur_list(item)
+             if (d["to"] is None or d["to"] > item.start) and (d["from"] is None or d["from"] < item.start + item.length)]
     if not boxes:
         return f"[{src}]null[{dst}]"
     n = len(boxes)
     parts = [f"[{src}]split={n + 1}[bl0]" + "".join(f"[br{k}]" for k in range(n))]
     cur = "bl0"
-    for k, (X, Y, bw, bh) in enumerate(boxes):
+    for k, d in enumerate(boxes):
+        bw, bh = _blur_px(d, w, h)
+        pts = [(t - item.start, *_blur_xy(d, cx, cy, w, h)) for t, cx, cy in d["keys"]]
+        ex = _piecewise([(t, x) for t, x, _y in pts])
+        ey = _piecewise([(t, y) for t, _x, y in pts])
         sw, sh = _blur_small(bw, bh)
-        parts.append(f"[br{k}]crop={bw}:{bh}:{X}:{Y},scale={sw}:{sh}:flags=area,gblur=sigma=0.6,"
+        parts.append(f"[br{k}]crop={bw}:{bh}:{ex}:{ey},scale={sw}:{sh}:flags=area,gblur=sigma=0.6,"
                      f"scale={bw}:{bh}:flags=bicubic[bq{k}]")
-        parts.append(f"[{cur}][bq{k}]overlay={X}:{Y}[bo{k}]")
+        a = -1.0 if d["from"] is None else d["from"] - item.start
+        b = item.length + 1 if d["to"] is None else d["to"] - item.start
+        parts.append(f"[{cur}][bq{k}]overlay={ex}:{ey}:enable=between(t\\,{a:.3f}\\,{b:.3f})[bo{k}]")
         cur = f"bo{k}"
     parts.append(f"[{cur}]null[{dst}]")
     return ";".join(parts)
@@ -814,7 +893,7 @@ def disclaimer_card(key: str, s: ReelSettings, w: int, h: int) -> Image.Image:
     img = Image.new("RGBA", (w, h), (13, 13, 13, 255))
     title_f = get_font(s.english_font, False, True, round(54 * k))[0]
     sub_f = get_font(s.english_font, False, False, round(38 * k))[0]
-    body_f, body_stroke = get_font(s.english_font, False, D["bold"], round(34 * k))
+    body_f, body_stroke, fake_slant = get_font_style(s.english_font, D["bold"], D["italic"], round(34 * k))
     max_w = w - round(150 * k)
     pitch = round(34 * k * 1.62)
     body_lines: list[str | None] = []
@@ -838,7 +917,7 @@ def disclaimer_card(key: str, s: ReelSettings, w: int, h: int) -> Image.Image:
         d.text((w / 2, y + round(38 * k) * 0.8), D["sub"], font=sub_f, fill=WHITE, anchor="ms")
         y += round(38 * k)
     y += gap3
-    sl = 0.2 if D["italic"] else 0.0      # slant the body text like the TBS cards
+    sl = 0.2 if fake_slant else 0.0       # no italic file: slant the upright letters
     for ln in body_lines:
         band = Image.new("RGBA", (w, pitch), (0, 0, 0, 0))
         ImageDraw.Draw(band).text((w / 2, pitch * 0.72), ln, font=body_f, fill=WHITE, anchor="ms",
@@ -866,6 +945,77 @@ def render_still(img: Image.Image, secs: float, out: str, log: str, cancel=None)
                               f"fade=t=out:st={secs - f:.3f}:d={f:.3f}[v]",
            "-map", "[v]", "-map", "1:a", *_SEG_V, *_SEG_A, "-t", f"{secs:.3f}", out]
     _run(cmd, log, total_secs=secs, cancel=cancel)
+
+
+# ---------------------------------------------------------------- sound for the preview
+SR = 48000
+
+
+def decode_audio(path: str, start: float = 0.0, secs: float = 0.0, sr: int = SR):
+    """Sound of a file as float32 stereo samples (numpy array, shape (n, 2))."""
+    import numpy as np
+    cmd = [ffmpeg_exe(), "-v", "error", "-ss", f"{max(0.0, start):.3f}"]
+    if secs > 0:
+        cmd += ["-t", f"{secs:.3f}"]
+    cmd += ["-i", path, "-vn", "-ac", "2", "-ar", str(sr), "-f", "f32le", "-"]
+    r = subprocess.run(cmd, capture_output=True, **_NO_WINDOW)
+    a = np.frombuffer(r.stdout[: len(r.stdout) // 8 * 8], np.float32).reshape(-1, 2)
+    return a
+
+
+def _ramp(a, fin: float, fout: float, sr: int):
+    import numpy as np
+    n = len(a)
+    if fin > 0:
+        k = min(n, int(fin * sr))
+        a[:k] *= np.linspace(0, 1, k, dtype=np.float32)[:, None]
+    if fout > 0:
+        k = min(n, int(fout * sr))
+        if k:
+            a[n - k:] *= np.linspace(1, 0, k, dtype=np.float32)[:, None]
+
+
+def preview_audio(items: list[Item], s: ReelSettings, sr: int = SR, cache: dict | None = None):
+    """The reel's sound (clips with mute, bleeps and fades, plus music), like the made reel."""
+    import numpy as np
+    cache = {} if cache is None else cache
+    total = sum(it.length for it in items)
+    n = int(round(total * sr))
+    out = np.zeros((n, 2), np.float32)
+    t0 = 0.0
+    for i, it in enumerate(items):
+        a0, L = int(round(t0 * sr)), int(round(it.length * sr))
+        t0 += it.length
+        if not uses_clip_sound(it, s):
+            continue
+        key = (it.path, round(it.start, 3), round(it.length, 3))
+        seg = cache.get(key)
+        if seg is None:
+            seg = decode_audio(it.path, it.start, it.length, sr)
+            cache[key] = seg
+        seg = seg[:L] * np.float32(s.clip_volume_pct / 100)
+        for a, b in bleeps_in(it):
+            ia, ib = int(a * sr), min(len(seg), int(b * sr))
+            if ib > ia:
+                tt = np.arange(ib - ia, dtype=np.float32) / sr
+                seg[ia:ib] = (BLEEP_VOL * np.sin(2 * np.pi * BLEEP_HZ * tt))[:, None]
+        _ramp(seg, *fades_for(items, s, i), sr)
+        m = min(len(seg), n - a0)
+        out[a0:a0 + m] += seg[:m]
+    music = s.music_path if s.music_path and os.path.exists(s.music_path) else ""
+    if music and n:
+        key = ("music", music)
+        mus = cache.get(key)
+        if mus is None:
+            mus = decode_audio(music, 0, 900, sr)
+            cache[key] = mus
+        if len(mus):
+            reps = -(-n // len(mus))
+            m = np.tile(mus, (reps, 1))[:n] * np.float32(s.music_volume_pct / 100)
+            _ramp(m, FADE if s.fade_in else 0.3, min(2.0, total / 4), sr)
+            out += m
+    np.clip(out, -0.95, 0.95, out=out)
+    return out
 
 
 # ---------------------------------------------------------------- rendering

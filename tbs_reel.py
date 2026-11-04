@@ -180,6 +180,9 @@ class App:
         self.blur_mode = False
         self.blur_sel = -1
         self.show_card = False
+        self.audio_cache: dict = {}
+        self._sound = None                 # the sounddevice module, once loaded (None = not tried)
+        self._sound_warned = False
         self.families = rc.families()
 
         root.title("TBS Reel")
@@ -568,6 +571,8 @@ class App:
         self.canvas.bind("<Motion>", self.pv_hover)
         for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
             self.canvas.bind(seq, self.pv_wheel)
+        for seq in ("<Button-3>",) + (("<Button-2>",) if MAC else ()):
+            self.canvas.bind(seq, self.pv_menu)
 
     # ================================================================ widget helpers
     def _btn(self, parent, text, cmd):
@@ -1193,9 +1198,7 @@ class App:
         it = self.current()
         if it and 0 <= self.blur_sel < len(it.meta.get("blurs") or []):
             self.snapshot()
-            bl = list(self.current().meta["blurs"])
-            bl.pop(self.blur_sel)
-            self.current().meta["blurs"] = bl
+            self._blurs().pop(self.blur_sel)
             self.blur_sel = -1
             self.refresh()
             self.set_status("Blur box removed.")
@@ -1404,6 +1407,12 @@ class App:
             for a, b in rc.bleeps_in(it):
                 c.create_rectangle(x0 + a * pps, BY1 - 14, max(x0 + a * pps + 3, x0 + b * pps), BY1 - 2,
                                    fill=RED_UI, outline="")
+            for bd in rc.blur_list(it):
+                ba = max(0.0, (bd["from"] if bd["from"] is not None else it.start) - it.start)
+                bb = min(it.length, (bd["to"] if bd["to"] is not None else it.start + it.length) - it.start)
+                if bb > ba:
+                    c.create_rectangle(x0 + ba * pps, BY1 - 24, max(x0 + ba * pps + 3, x0 + bb * pps), BY1 - 17,
+                                       fill="#3B82F6", outline="")
             if self.bleep_mark and self.bleep_mark[0] == it.path and it.start <= self.bleep_mark[1] <= it.start + it.length:
                 bx = x0 + (self.bleep_mark[1] - it.start) * pps
                 c.create_line(bx, BY0, bx, BY1, fill=RED_UI, width=2, dash=(3, 2))
@@ -1904,7 +1913,7 @@ class App:
 
     def _compose(self, pic: Image.Image, idx: int, pos: float, fades: bool) -> Image.Image:
         it = self.items[idx]
-        img = rc.blur_picture(pic, it)
+        img = rc.blur_picture(pic, it, pos)
         if fades:
             lvl = rc.fade_level(pos, it.length, *rc.fades_for(self.items, self.s, idx))
             if lvl < 1:
@@ -1945,14 +1954,51 @@ class App:
             self.canvas.create_text(cw // 2, ch // 2, fill=MUTED, font=FONT, text=f"Could not show {it.name}")
         self._draw_guides()
 
+    def _blurs(self) -> list[dict]:
+        """The current clip's blur boxes (in the new style, so they can be changed in place)."""
+        it = self.current()
+        if it is None:
+            return []
+        it.meta["blurs"] = rc.blur_list(it)
+        return it.meta["blurs"]
+
+    def _ft(self) -> float:
+        it = self.current()
+        return (it.start + self.pos) if it else 0.0
+
+    def _move_blur(self, d: dict, cx: float, cy: float, whole_path: bool = False):
+        """Put a blur box's centre at (cx, cy) now. Following: a new point on its path here.
+        Not following (or whole_path): the whole box moves."""
+        cx, cy = max(0.0, min(1.0, cx)), max(0.0, min(1.0, cy))
+        ft = self._ft()
+        if d.get("follow") and not whole_path:
+            for k in d["keys"]:
+                if abs(k[0] - ft) < 0.06:
+                    k[1], k[2] = round(cx, 4), round(cy, 4)
+                    break
+            else:
+                d["keys"].append([round(ft, 3), round(cx, 4), round(cy, 4)])
+                d["keys"].sort()
+        else:
+            ox, oy = rc.blur_centre(d, ft)
+            for k in d["keys"]:
+                k[1] = round(max(0.0, min(1.0, k[1] + cx - ox)), 4)
+                k[2] = round(max(0.0, min(1.0, k[2] + cy - oy)), 4)
+
     def _blur_rects(self):
-        """Blur boxes of the current clip in canvas pixels."""
+        """Blur boxes of the current clip in canvas pixels, and whether each shows right now."""
         it = self.current()
         x, y, w, h = self.pv
         out = []
-        for b in (it.meta.get("blurs") or []) if it else []:
-            out.append((x + min(b[0], b[2]) * w, y + min(b[1], b[3]) * h,
-                        x + max(b[0], b[2]) * w, y + max(b[1], b[3]) * h))
+        if it is None:
+            return out
+        ft = self._ft()
+        for d in rc.blur_list(it):
+            cx, cy = rc.blur_centre(d, ft)
+            bw, bh = d["w"] * w, d["h"] * h
+            a = x + max(0.0, min(w - bw, cx * w - bw / 2))
+            b = y + max(0.0, min(h - bh, cy * h - bh / 2))
+            out.append((a, b, a + bw, b + bh, rc.blur_active(d, ft)))
         return out
 
     def _head_rect(self):
@@ -1969,10 +2015,14 @@ class App:
         c.delete("guide")
         if self.playing is not None:
             return
-        for k, (a, b, cc, d) in enumerate(self._blur_rects()):
+        for k, (a, b, cc, d, on) in enumerate(self._blur_rects()):
             sel = k == self.blur_sel
-            c.create_rectangle(a, b, cc, d, outline=ACCENT if sel else "#FFFFFF", dash=(4, 3), width=2 if sel else 1,
+            col = ACCENT if sel else ("#FFFFFF" if on else "#8A949E")
+            c.create_rectangle(a, b, cc, d, outline=col, dash=(4, 3) if on else (1, 4), width=2 if sel else 1,
                                tags="guide")
+            if not on:
+                c.create_text((a + cc) / 2, (b + d) / 2, text="blur off here", fill="#C8D0D8", font=SMALL,
+                              tags="guide")
             c.create_rectangle(cc - 7, d - 7, cc, d, fill=ACCENT if sel else "#FFFFFF", outline="", tags="guide")
             c.create_oval(cc - 9, b - 9, cc + 9, b + 9, fill="#C4002E", outline="", tags="guide")
             c.create_text(cc, b, text="✕", fill="#FFFFFF", font=("Segoe UI", 8, "bold"), tags="guide")
@@ -1983,7 +2033,7 @@ class App:
 
     def _pv_hit(self, ex, ey):
         """What is under the pointer on the preview."""
-        for k, (a, b, cc, d) in reversed(list(enumerate(self._blur_rects()))):
+        for k, (a, b, cc, d, _on) in reversed(list(enumerate(self._blur_rects()))):
             if (ex - cc) ** 2 + (ey - b) ** 2 <= 100:
                 return ("blur_x", k)
             if cc - 9 <= ex <= cc + 3 and d - 9 <= ey <= d + 3:
@@ -2029,8 +2079,9 @@ class App:
         fx, fy = (e.x - x) / w, (e.y - y) / h
         if self.blur_mode and what in ("pic", "head"):
             self.snapshot()
-            bl = list(self.current().meta.get("blurs") or []) + [[fx, fy, fx, fy]]
-            self.current().meta["blurs"] = bl
+            bl = self._blurs()
+            bl.append({"w": 0.0, "h": 0.0, "keys": [[round(self._ft(), 3), fx, fy]], "from": None, "to": None,
+                       "follow": False})
             self.blur_sel = len(bl) - 1
             self.pv_drag = {"mode": "blur_new", "k": self.blur_sel, "fx": fx, "fy": fy}
             return
@@ -2041,8 +2092,10 @@ class App:
         if what in ("blur_move", "blur_size"):
             self.snapshot()
             self.blur_sel = k
-            self.pv_drag = {"mode": what, "k": k, "fx": fx, "fy": fy,
-                            "box": list(self.current().meta["blurs"][k])}
+            bd = self._blurs()[k]
+            cx, cy = rc.blur_centre(bd, self._ft())
+            self.pv_drag = {"mode": what, "k": k, "fx": fx, "fy": fy, "cx": cx, "cy": cy,
+                            "x0": cx - bd["w"] / 2, "y0": cy - bd["h"] / 2}
             self._draw_guides()
             return
         self.blur_sel = -1
@@ -2088,18 +2141,17 @@ class App:
             it.meta["cy"] = round(max(hy, min(1 - hy, it.meta["cy"] - ddy * ch / h / sh)), 4)
             self.refresh(15)
         elif d["mode"] == "blur_new":
-            self.current().meta["blurs"][d["k"]] = [d["fx"], d["fy"], fx, fy]
+            bd = self._blurs()[d["k"]]
+            bd["w"], bd["h"] = abs(fx - d["fx"]), abs(fy - d["fy"])
+            bd["keys"] = [[bd["keys"][0][0], (fx + d["fx"]) / 2, (fy + d["fy"]) / 2]]
             self.refresh(15)
         elif d["mode"] == "blur_move":
-            b = d["box"]
-            ddx = max(-min(b[0], b[2]), min(1 - max(b[0], b[2]), fx - d["fx"]))
-            ddy = max(-min(b[1], b[3]), min(1 - max(b[1], b[3]), fy - d["fy"]))
-            self.current().meta["blurs"][d["k"]] = [b[0] + ddx, b[1] + ddy, b[2] + ddx, b[3] + ddy]
+            self._move_blur(self._blurs()[d["k"]], d["cx"] + fx - d["fx"], d["cy"] + fy - d["fy"])
             self.refresh(15)
         elif d["mode"] == "blur_size":
-            b = d["box"]
-            x0, y0 = min(b[0], b[2]), min(b[1], b[3])
-            self.current().meta["blurs"][d["k"]] = [x0, y0, max(x0 + 0.02, fx), max(y0 + 0.02, fy)]
+            bd = self._blurs()[d["k"]]
+            bd["w"], bd["h"] = round(max(0.03, fx - d["x0"]), 4), round(max(0.02, fy - d["y0"]), 4)
+            self._move_blur(bd, d["x0"] + bd["w"] / 2, d["y0"] + bd["h"] / 2, whole_path=True)
             self.refresh(15)
 
     def pv_release(self, e):
@@ -2108,21 +2160,79 @@ class App:
             return
         it = self.current()
         if d["mode"] == "blur_new" and it is not None:
-            b = it.meta["blurs"][d["k"]]
-            if abs(b[2] - b[0]) < 0.03 or abs(b[3] - b[1]) < 0.02:      # a click, not a box: make a default one
-                cx, cy = b[0], b[1]
-                b[:] = [max(0, cx - 0.12), max(0, cy - 0.07), min(1, cx + 0.12), min(1, cy + 0.07)]
-            it.meta["blurs"][d["k"]] = [round(min(b[0], b[2]), 4), round(min(b[1], b[3]), 4),
-                                        round(max(b[0], b[2]), 4), round(max(b[1], b[3]), 4)]
+            bd = self._blurs()[d["k"]]
+            if bd["w"] < 0.03 or bd["h"] < 0.02:      # a click, not a box: make a box of a good size
+                bd["w"], bd["h"] = 0.24, 0.14
+            bd["w"], bd["h"] = round(bd["w"], 4), round(bd["h"], 4)
             self.blur_mode = False
             self.update_item_bar()
             self.draw_timeline()
-            self.set_status("Blur box added. Drag it to move it, drag its corner to resize, ✕ to remove.")
+            self.set_status("Blur box added. Drag it to move it, drag its corner to resize. Right-click it to "
+                            "blur only from or to the playhead, or to follow something that moves.")
         elif d["mode"] == "pic":
             self.update_edit_buttons()
         elif d["mode"] == "head":
             self.set_status("Headline moved. Click Reset place to put it back.")
         self.refresh()
+
+    def pv_menu(self, e):
+        """Right-click on a blur box: when it shows, following a moving subject, removing it."""
+        what, k = self._pv_hit(e.x, e.y)
+        if what not in ("blur_move", "blur_size", "blur_x"):
+            return
+        self.stop_play()
+        self.blur_sel = k
+        self._draw_guides()
+        bd = self._blurs()[k]
+        here = fmt_secs(self.pos)
+
+        def change(fn, msg):
+            self.snapshot()
+            fn(self._blurs()[k])
+            self.draw_timeline()
+            self.refresh()
+            self.set_status(msg)
+
+        def set_from(d):
+            d["from"] = round(self._ft(), 3)
+            if d["to"] is not None and d["to"] <= d["from"]:
+                d["to"] = None
+
+        def set_to(d):
+            d["to"] = round(self._ft(), 3)
+            if d["from"] is not None and d["from"] >= d["to"]:
+                d["from"] = None
+
+        def follow(d):
+            d["follow"] = True
+
+        def still(d):
+            cx, cy = rc.blur_centre(d, self._ft())
+            d["keys"], d["follow"] = [[round(self._ft(), 3), cx, cy]], False
+
+        m = tk.Menu(self.root, tearoff=0, bg=PANEL, fg=INK, activebackground=ACCENT, activeforeground="#1A0F06")
+        m.add_command(label=f"Blur starts here ({here})",
+                      command=lambda: change(set_from, f"The blur now starts at {here} in this clip."))
+        m.add_command(label=f"Blur ends here ({here})",
+                      command=lambda: change(set_to, f"The blur now ends at {here} in this clip."))
+        m.add_command(label="Blur the whole clip",
+                      command=lambda: change(lambda d: d.update({"from": None, "to": None}),
+                                             "The blur now covers the whole clip."))
+        m.add_separator()
+        if bd.get("follow"):
+            m.add_command(label="Stop following (keep it still here)",
+                          command=lambda: change(still, "The blur box stays still now."))
+        else:
+            m.add_command(label="Follow something that moves…",
+                          command=lambda: change(follow, "Following: move the playhead (or play and pause), then "
+                                                         "drag the box onto the face again. Do it every second or "
+                                                         "so; the box glides between the places you set."))
+        m.add_separator()
+        m.add_command(label="Remove this blur", command=self.delete_blur)
+        try:
+            m.tk_popup(e.x_root, e.y_root)
+        finally:
+            m.grab_release()
 
     def pv_wheel(self, e):
         it = self.current()
@@ -2157,7 +2267,59 @@ class App:
                         "frames": 0, "base": 0.0, "pic": None, "w": w - w % 2, "h": h - h % 2, "ended": False}
         self.play_btn.config(text="❚❚ Pause")
         self.canvas.delete("guide")
+        token = object()
+        self.playing["token"] = token
+        items = copy.deepcopy(self.items)
+        settings = ReelSettings(**copy.deepcopy(asdict(self.s)))
+        if len(self.audio_cache) > 60:
+            self.audio_cache.clear()
+
+        def work():
+            try:
+                track = rc.preview_audio(items, settings, cache=self.audio_cache)
+            except Exception:
+                track = None
+            try:
+                self.root.after(0, self._audio_ready, token, track)
+            except Exception:
+                pass
+        threading.Thread(target=work, daemon=True).start()
         self._play_tick()
+
+    def sound(self):
+        """The sound output (sounddevice), or None when this computer has none."""
+        if self._sound is None:
+            try:
+                import sounddevice
+                self._sound = sounddevice
+            except Exception:
+                self._sound = False
+        return self._sound or None
+
+    def _audio_ready(self, token, track):
+        P = self.playing
+        if P is None or P.get("token") is not token or track is None or not len(track):
+            return
+        sd = self.sound()
+        if sd is None:
+            if not self._sound_warned:
+                self._sound_warned = True
+                self.set_status("No sound output was found, so the preview plays without sound.")
+            return
+        now = P["T0"] + (time.time() - P["t0"])
+        i0 = int(now * rc.SR)
+        if i0 >= len(track) - rc.SR // 20:
+            return
+        try:
+            sd.play(track[i0:], rc.SR)
+        except Exception as e:
+            if not self._sound_warned:
+                self._sound_warned = True
+                self.set_status(f"The preview can't play sound on this computer ({e}).")
+            return
+        # start the picture clock again together with the sound, so they stay in step
+        P["audio"] = True
+        P["t0"], P["T0"] = time.time(), now
 
     def _play_open(self, i: int, pos: float):
         P = self.playing
@@ -2251,6 +2413,11 @@ class App:
         P, self.playing = self.playing, None
         self._play_drawn = None
         self._kill(P.get("proc"))
+        if P.get("audio") and self.sound() is not None:
+            try:
+                self.sound().stop()
+            except Exception:
+                pass
         self.play_btn.config(text="▶ Play")
         if at_end and self.items:
             self.cur = len(self.items) - 1
@@ -2360,6 +2527,11 @@ def check(out_path: str) -> int:
             card = rc.disclaimer_card("copyright", s, *rc.dims(s))
             lines.append(f"{lay}: overlay={ov.size} card={card.size}")
             ok = ok and ov.size == rc.dims(s)
+        import sounddevice
+        lines.append(f"sound={sounddevice.get_portaudio_version()[1]}")
+        it = Item("x", "video", length=2.0, start=1.0)
+        it.meta["blurs"] = [{"w": 0.2, "h": 0.1, "keys": [[1.0, 0.3, 0.3], [2.0, 0.6, 0.6]], "from": 1.2, "to": 2.5}]
+        lines.append(f"blur={rc.blur_boxes(it, 1080, 1920, 0.5)}")
         lines.append(f"ffmpeg={os.path.exists(rc.ffmpeg_exe())}")
         ok = ok and os.path.exists(rc.ffmpeg_exe())
     except Exception as e:

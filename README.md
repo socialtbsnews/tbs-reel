@@ -12,7 +12,8 @@ Makes reels in the TBS frame from photos and video clips, as a 30 fps MP4 in two
    double-click a picture there, or drag it onto the timeline. Dropping files on the MEDIA box only
    stores them. Dropping a music file sets the music; dropping font files adds them.
 2. **Edit on the timeline** (bottom):
-   - Click anywhere to move the playhead (yellow line). **▶ Play** plays the whole reel from there.
+   - Click anywhere to move the playhead (yellow line). **▶ Play** plays the whole reel from there,
+     with its sound (clip sound, music, mutes and bleeps, as in the made reel).
    - Drag a clip to move it. Drag a clip's edge to trim it. Right-click a clip for more.
    - **✂ Split**, **Trim start**, **Trim end** and **✕ Delete** work at the playhead. **↶ Undo** (Ctrl+Z).
    - **Mute** takes the sound off one clip. Untick "Use the sound of the video clips" to take it off all.
@@ -25,7 +26,9 @@ Makes reels in the TBS frame from photos and video clips, as a 30 fps MP4 in two
    - Drag the picture to pick the subject, and zoom with the mouse wheel or the **Zoom** slider
      (e.g. turn a wide 1920 x 1080 video into a 9:16 reel on one person). **Reset picture** undoes it.
    - **▢ Blur box**, then drag a box over a face or anything sensitive. Drag the box to move it, its corner
-     to resize it, ✕ to remove it. It stays for the whole clip (split the clip to blur only a part).
+     to resize it, ✕ to remove it. Right-click it to make it start or end at the playhead (blue bar on the
+     timeline), or to **follow something that moves**: move the playhead, drag the box onto the subject
+     again, repeat every second or so; the box glides between the places you set.
    - Drag the **headline** to move it. **Reset place** puts it back.
 4. **Type the text** (left side): **Date**, **Credit**, and the **Headline** (select words and click
    **Bold** or **Yellow**; **Align** left, centre or right). **Dark shade** size and darkness can be changed.
@@ -40,7 +43,8 @@ with **Add fonts…** (they are copied to `~/.tbs_reel_fonts` and stay available
 Paid fonts are not stored in this repository.
 
 Built-in free fonts (SIL Open Font License, see `fonts/`): Noto Sans Bengali, Hind Siliguri,
-Noto Serif, Roboto Condensed. A font with only a bold file gets a slightly thicker look when Bold is used.
+Noto Serif (with italics), Roboto Condensed. The disclaimer cards use the headline font's italic
+file when the computer has one (e.g. FF Meta Serif Pro Italic). A font with only a bold file gets a slightly thicker look when Bold is used.
 Letters are balanced to look the same size whatever fonts are picked.
 
 ## Quality

@@ -49,7 +49,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          python -m PyInstaller --noconfirm --onefile --windowed --name "TBS Reel" --collect-all tkinterdnd2 --collect-all imageio_ffmpeg --add-data "assets;assets" --add-data "fonts;fonts" --add-binary "libs/*.dll;libs" --icon assets/icon.ico --version-file version_info.txt tbs_reel.py
+          python -m PyInstaller --noconfirm --onefile --windowed --name "TBS Reel" --collect-all tkinterdnd2 --collect-all imageio_ffmpeg --collect-all sounddevice --collect-all _sounddevice_data --add-data "assets;assets" --add-data "fonts;fonts" --add-binary "libs/*.dll;libs" --icon assets/icon.ico --version-file version_info.txt tbs_reel.py
           "dist/TBS Reel.exe" --check check.txt || true
           cat check.txt
           grep -q "^OK" check.txt
@@ -57,7 +57,7 @@ jobs:
       - name: Build (macOS)
         if: runner.os == 'macOS'
         run: |
-          python -m PyInstaller --noconfirm --windowed --name "TBS Reel" --osx-bundle-identifier com.tbsnews.reel --collect-all tkinterdnd2 --collect-all imageio_ffmpeg --add-data "assets:assets" --add-data "fonts:fonts" --add-binary "libs/libfribidi.dylib:libs" --icon assets/icon.png tbs_reel.py
+          python -m PyInstaller --noconfirm --windowed --name "TBS Reel" --osx-bundle-identifier com.tbsnews.reel --collect-all tkinterdnd2 --collect-all imageio_ffmpeg --collect-all sounddevice --collect-all _sounddevice_data --add-data "assets:assets" --add-data "fonts:fonts" --add-binary "libs/libfribidi.dylib:libs" --icon assets/icon.png tbs_reel.py
           "dist/TBS Reel.app/Contents/MacOS/TBS Reel" --check "$PWD/check.txt" || true
           cat check.txt
           grep -q "^OK" check.txt

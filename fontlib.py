@@ -42,6 +42,8 @@ class Family:
     bangla: bool
     latin: bool
     source: str
+    italic: str = ""     # italic file ("" = none: slant the regular one)
+    bold_italic: str = ""
 
 
 def _base() -> str:
@@ -109,15 +111,26 @@ def _families(faces: list[Face], source: str) -> dict[str, Family]:
     groups: dict[str, list[Face]] = {}
     for f in faces:
         if f.bangla or f.latin:
-            groups.setdefault(f.family, []).append(f)
+            name = f.family
+            if f.italic:              # "Noto Serif Italic" belongs to "Noto Serif"
+                for suffix in (" Italic", " Oblique", " It"):
+                    if name.endswith(suffix):
+                        name = name[: -len(suffix)]
+            groups.setdefault(name, []).append(f)
     out = {}
     for name, fs in groups.items():
         upright = [f for f in fs if not f.italic] or fs
         regular = min(upright, key=lambda f: (abs(f.weight - 400), f.weight))
         heavier = [f for f in upright if f.weight >= regular.weight + 150]
         bold = min(heavier, key=lambda f: abs(f.weight - 700)) if heavier else regular
+        slanted = [f for f in fs if f.italic]
+        it = min(slanted, key=lambda f: abs(f.weight - regular.weight)) if slanted else None
+        bit = min(slanted, key=lambda f: abs(f.weight - bold.weight)) if slanted else None
+        if bit is not None and bold is not regular and bit.weight < regular.weight + 150:
+            bit = None
         out[name] = Family(name, regular.path, bold.path, bold is regular,
-                           any(f.bangla for f in fs), any(f.latin for f in fs), source)
+                           any(f.bangla for f in fs), any(f.latin for f in fs), source,
+                           it.path if it else "", bit.path if bit else "")
     return out
 
 
