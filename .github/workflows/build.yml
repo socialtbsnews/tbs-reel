@@ -1,0 +1,53 @@
+name: Build TBS Reel
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: python -m pip install -r requirements.txt
+      - name: Check Bangla text and the reel engine
+        run: python selftest.py
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          python -m PyInstaller --noconfirm --onefile --windowed --name "TBS Reel" --collect-all tkinterdnd2 --collect-all imageio_ffmpeg --add-data "assets;assets" --add-data "fonts;fonts" --icon assets/icon.ico --version-file version_info.txt tbs_reel.py
+          mv "dist/TBS Reel.exe" dist/TBS-Reel-Windows.exe
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          python -m PyInstaller --noconfirm --windowed --name "TBS Reel" --osx-bundle-identifier com.tbsnews.reel --collect-all tkinterdnd2 --collect-all imageio_ffmpeg --add-data "assets:assets" --add-data "fonts:fonts" --icon assets/icon.png tbs_reel.py
+          cd dist && ditto -c -k --keepParent "TBS Reel.app" TBS-Reel-Mac.zip
+      - name: Keep the build (downloadable from this run's page)
+        uses: actions/upload-artifact@v4
+        with:
+          name: TBS-Reel-${{ runner.os }}
+          path: dist/TBS-Reel-*
+      - name: Publish to the release (each system as soon as it is built)
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v1.0.${{ github.run_number }}"
+          gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1 || \
+            gh release create "$TAG" --repo "${{ github.repository }}" --target "${{ github.sha }}" \
+              --title "TBS Reel $TAG" \
+              --notes "Download TBS-Reel-Windows.exe for Windows or TBS-Reel-Mac.zip for Mac." || true
+          for i in 1 2 3; do
+            gh release upload "$TAG" dist/TBS-Reel-* --clobber --repo "${{ github.repository }}" && break
+            sleep 5
+          done
