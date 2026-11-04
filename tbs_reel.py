@@ -4,7 +4,7 @@
 2. Edit on the timeline: click a clip, move the slider, then Split, Cut start,
    Cut end or Delete. Undo puts it back.
 3. Type the date, credit and headline. Select words and click Bold or Yellow.
-   Bangla and English both work, each with its own font.
+   Pick the fonts for the headline and for the date/credit.
 4. Click Make reel. You get a 1080 x 1350 (4:5) MP4 in the TBS reel frame.
 """
 from __future__ import annotations
@@ -40,11 +40,11 @@ YELLOW_UI = "#FFF636"
 FONT = ("Segoe UI", 10)
 BOLD = ("Segoe UI", 10, "bold")
 if sys.platform.startswith("win"):
-    TEXT_FONT = "Nirmala UI"          # shows Bangla and English
+    TEXT_FONT = "Segoe UI"
 elif sys.platform == "darwin":
-    TEXT_FONT = "Kohinoor Bangla"
+    TEXT_FONT = "Helvetica Neue"
 else:
-    TEXT_FONT = "Noto Sans Bengali"
+    TEXT_FONT = "DejaVu Sans"
 MEDIA_TYPES = [("Photos and videos", " ".join(f"*{e}" for e in sorted(PHOTO_EXT | VIDEO_EXT))),
                ("Videos", " ".join(f"*{e}" for e in sorted(VIDEO_EXT))),
                ("Photos", " ".join(f"*{e}" for e in sorted(PHOTO_EXT)))]
@@ -225,7 +225,7 @@ class App:
         for v in (self.date_var, self.credit_var):
             v.trace_add("write", lambda *_: self.look_changed())
 
-        self._section(left, "HEADLINE  (Bangla, English or both)")
+        self._section(left, "HEADLINE")
         self.head = tk.Text(left, height=4, wrap="word", bg=PANEL, fg=INK, insertbackground=INK, relief="flat",
                             font=(TEXT_FONT, 13), undo=True, padx=6, pady=5, selectbackground="#3B5A78")
         self.head.tag_configure("hl", foreground=YELLOW_UI)
@@ -246,8 +246,7 @@ class App:
         self.load_headline()
 
         self._section(left, "FONTS")
-        self.bn_menu = self._combo_row(left, "Bangla", self.font_changed)
-        self.en_menu = self._combo_row(left, "English", self.font_changed)
+        self.en_menu = self._combo_row(left, "Headline", self.font_changed)
         self.top_menu = self._combo_row(left, "Date/credit", self.font_changed)
         self.hsize_var = tk.DoubleVar(self.root, value=self.s.head_size_pct)
         self._slider(left, "Size", self.hsize_var, 60, 140)
@@ -481,10 +480,10 @@ class App:
         self.fill_font_menus()
         self.apply_ui_fonts()
         mine = [n for n, f in fams.items() if f.source != "built in"]
-        found = [n for n in ("BiblioMono", "FF Meta Serif Pro", "November Condensed LCG") if n in fams]
+        found = [n for n in ("FF Meta Serif Pro", "November Condensed LCG") if n in fams]
         self.font_note.config(text=("Found " + " and ".join(found)) if found else
                               (f"{len(mine)} fonts from this computer" if mine else "Using the built-in fonts"))
-        missing = [n for n in ("BiblioMono", "FF Meta Serif Pro", "November Condensed LCG") if n not in fams]
+        missing = [n for n in ("FF Meta Serif Pro", "November Condensed LCG") if n not in fams]
         if missing:
             self.set_status("Not found on this computer: " + ", ".join(missing) +
                             ". Install them, or click Add fonts… and pick the font files.")
@@ -493,13 +492,10 @@ class App:
 
     def fill_font_menus(self):
         fams = self.families
-        bn = sorted([n for n, f in fams.items() if f.bangla], key=str.lower)
         en = sorted([n for n, f in fams.items() if f.latin], key=str.lower)
-        self.bn_menu.config(values=bn)
         self.en_menu.config(values=en)
         self.top_menu.config(values=en)
-        for menu, names, attr, is_bn, prefs in ((self.bn_menu, bn, "bangla_font", True, None),
-                                                (self.en_menu, en, "english_font", False, None),
+        for menu, names, attr, is_bn, prefs in ((self.en_menu, en, "english_font", False, None),
                                                 (self.top_menu, en, "top_font", False, fontlib.PREFERRED_TOP)):
             want = getattr(self.s, attr)
             if want not in names:
@@ -507,7 +503,6 @@ class App:
             menu.set(want)
 
     def font_changed(self):
-        self.s.bangla_font = self.bn_menu.get()
         self.s.english_font = self.en_menu.get()
         self.s.top_font = self.top_menu.get()
         self.apply_ui_fonts()
@@ -525,7 +520,7 @@ class App:
         self.font_note.config(text="Adding fonts…")
         threading.Thread(target=self._scan_fonts, daemon=True).start()
         self.set_status(f"Added {len(added)} font file{'s' if len(added) != 1 else ''}. "
-                        "Pick them in the Bangla / English menus.")
+                        "Pick them in the font menus.")
 
     # ---- headline
     def headline_runs(self):
@@ -560,7 +555,7 @@ class App:
     # ---- show the chosen fonts in the typing boxes too
     def apply_ui_fonts(self):
         fams = self.families
-        for key, menu in (("en", self.en_menu), ("bn", self.bn_menu), ("top", self.top_menu)):
+        for key, menu in (("en", self.en_menu), ("top", self.top_menu)):
             f = fams.get(menu.get())
             name = TEXT_FONT
             if f is not None:
@@ -570,7 +565,7 @@ class App:
                     use_font_file(f.bold)
                     name = f.name
             self.ui_fonts[key] = name
-        en, bn = self.ui_fonts["en"], self.ui_fonts["bn"]
+        en = bn = self.ui_fonts["en"]
         self.head.config(font=(en, 14))
         for tag, fam, weight in (("f_en", en, "normal"), ("f_bn", bn, "normal"),
                                  ("f_en_b", en, "bold"), ("f_bn_b", bn, "bold")):

@@ -16,11 +16,11 @@ Makes reels in the TBS reel frame: 1080 x 1350 (4:5), 30 fps MP4, from photos an
    - Photos: set how many seconds each stays on screen.
    - Keys: Space = play/pause, S = split, Delete = delete clip, ← → = one frame.
 3. **Type the text** (left side):
-   - **Date** (starts as today; **Today** resets it) and **Credit**, e.g. `Video: Shariar Gaalib` or `ছবি: ...`.
-   - **Headline** in Bangla, English or both. Select words and click **Bold** or **Yellow**
+   - **Date** (starts as today; **Today** resets it) and **Credit**, e.g. `Video: Shariar Gaalib`.
+   - **Headline**: select words and click **Bold** or **Yellow**
      (click again to take it off; **Plain** clears both). Enter starts a new line; long headlines
      wrap and shrink a little if they need more than 3 lines.
-   - **Fonts:** pick the Bangla font and the English font, and the headline size.
+   - **Fonts:** pick the headline font and the date/credit font, and the headline size.
 4. **Make reel** and choose where to save.
 
 ## The frame
@@ -35,14 +35,13 @@ Makes reels in the TBS reel frame: 1080 x 1350 (4:5), 30 fps MP4, from photos an
 
 ## Fonts
 The app looks for fonts installed on the computer and picks TBS's fonts first:
-**BiblioMono** (Bangla), **FF Meta Serif Pro** (English headline) and **November Condensed LCG**
-(date and credit). The typing boxes show the chosen fonts too. Fonts can also be added inside the app
+**FF Meta Serif Pro** (headline) and **November Condensed LCG** (date and credit). The typing boxes show the chosen fonts too. Fonts can also be added inside the app
 with **Add fonts…** (they are copied to `~/.tbs_reel_fonts` and stay available).
 Paid fonts are not stored in this repository.
 
 Built-in free fonts (SIL Open Font License, see `fonts/`): Noto Sans Bengali, Hind Siliguri,
 Noto Serif, Roboto Condensed. A font with only a bold file gets a slightly thicker look when Bold is used.
-Bangla and English letters are balanced to look the same size whatever fonts are picked.
+Letters are balanced to look the same size whatever fonts are picked.
 
 ## Quality
 H.264 High profile, CRF 16 (very high quality), AAC 256 kbps, fast-start MP4.
