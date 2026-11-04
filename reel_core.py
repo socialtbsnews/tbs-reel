@@ -46,7 +46,7 @@ AUDIO_EXT = {".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".opus", ".wma"}
 LAYOUTS = {
     "reel": dict(label="9:16 reel  (1080 x 1920)", w=1080, h=1920,
                  logo=(88, 236, 88), right=992, date=(298, 36), credit=(334, 28),
-                 head_y=0.80, head_size=62, margin=88, shade=30, dark=80, strip=0),
+                 head_y=0.80, head_size=62, margin=88, shade=30, dark=80, strip=28),
     "feed": dict(label="4:5 post  (1080 x 1350)", w=1080, h=1350,
                  logo=(64, 69, 78), right=1016, date=(102, 30), credit=(131, 24),
                  head_y=0.782, head_size=72, margin=60, shade=30, dark=76, strip=20),
