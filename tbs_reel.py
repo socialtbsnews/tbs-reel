@@ -1158,7 +1158,33 @@ def make_root() -> tk.Tk:
     return tk.Tk()
 
 
+def check(out_path: str) -> int:
+    """Used by the build: prove the packaged app can shape Bangla and draw the frame."""
+    from PIL import features
+    lines, ok = [], True
+    try:
+        lines.append(f"raqm={features.check('raqm')} fribidi={features.version('fribidi')} "
+                     f"loaded={rc.fribidi_loader.LOADED}")
+        ok = bool(features.check("raqm"))
+        f = rc.headline_font(60)
+        shaped = f.getlength("\u0995\u09cd\u09b7") < f.getlength("\u0995") + f.getlength("\u09b7")
+        lines.append(f"bangla_shaped={shaped}")
+        ok = ok and shaped
+        ov = overlay(ReelSettings(headline=[["\u0985\u09ac\u09c8\u09a7 ", False, False], ["Test", True, True]]))
+        lines.append(f"overlay={ov.size} ffmpeg={os.path.exists(rc.ffmpeg_exe())}")
+        ok = ok and os.path.exists(rc.ffmpeg_exe())
+    except Exception as e:
+        lines.append(f"error={e!r}")
+        ok = False
+    lines.append("OK" if ok else "FAILED")
+    with open(out_path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+    return 0 if ok else 3
+
+
 def main():
+    if len(sys.argv) > 2 and sys.argv[1] == "--check":
+        sys.exit(check(sys.argv[2]))
     root = make_root()
     app = App(root)
 

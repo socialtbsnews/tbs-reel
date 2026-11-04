@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Callable
 
+import fribidi_loader  # noqa: F401  (must come before PIL.ImageFont: Bangla shaping)
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps, features
 
 import fontlib

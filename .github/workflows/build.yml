@@ -18,18 +18,49 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: python -m pip install -r requirements.txt
+      - name: Get FriBiDi (needed for Bangla text shaping) - Windows
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir -p libs
+          if [ -x /c/msys64/usr/bin/pacman ]; then
+            /c/msys64/usr/bin/pacman -Sy --noconfirm --needed mingw-w64-x86_64-fribidi
+            cp /c/msys64/mingw64/bin/libfribidi-0.dll libs/
+          else
+            vcpkg install fribidi:x64-windows
+            cp "$VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin/"*fribidi*.dll libs/
+          fi
+          ls -la libs
+          objdump -p libs/*.dll | grep "DLL Name" || true
+      - name: Get FriBiDi (needed for Bangla text shaping) - Mac
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p libs
+          brew install fribidi
+          cp "$(brew --prefix fribidi)/lib/libfribidi.0.dylib" libs/libfribidi.dylib
+          chmod u+w libs/libfribidi.dylib
+          otool -L libs/libfribidi.dylib
+          # remove the system copy so the test proves the app uses its own
+          brew uninstall --ignore-dependencies fribidi || true
+          ls /usr/local/lib/libfribidi* 2>/dev/null || echo "no system fribidi left"
       - name: Check Bangla text and the reel engine
         run: python selftest.py
       - name: Build (Windows)
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          python -m PyInstaller --noconfirm --onefile --windowed --name "TBS Reel" --collect-all tkinterdnd2 --collect-all imageio_ffmpeg --add-data "assets;assets" --add-data "fonts;fonts" --icon assets/icon.ico --version-file version_info.txt tbs_reel.py
+          python -m PyInstaller --noconfirm --onefile --windowed --name "TBS Reel" --collect-all tkinterdnd2 --collect-all imageio_ffmpeg --add-data "assets;assets" --add-data "fonts;fonts" --add-binary "libs/*.dll;libs" --icon assets/icon.ico --version-file version_info.txt tbs_reel.py
+          "dist/TBS Reel.exe" --check check.txt || true
+          cat check.txt
+          grep -q "^OK" check.txt
           mv "dist/TBS Reel.exe" dist/TBS-Reel-Windows.exe
       - name: Build (macOS)
         if: runner.os == 'macOS'
         run: |
-          python -m PyInstaller --noconfirm --windowed --name "TBS Reel" --osx-bundle-identifier com.tbsnews.reel --collect-all tkinterdnd2 --collect-all imageio_ffmpeg --add-data "assets:assets" --add-data "fonts:fonts" --icon assets/icon.png tbs_reel.py
+          python -m PyInstaller --noconfirm --windowed --name "TBS Reel" --osx-bundle-identifier com.tbsnews.reel --collect-all tkinterdnd2 --collect-all imageio_ffmpeg --add-data "assets:assets" --add-data "fonts:fonts" --add-binary "libs/libfribidi.dylib:libs" --icon assets/icon.png tbs_reel.py
+          "dist/TBS Reel.app/Contents/MacOS/TBS Reel" --check "$PWD/check.txt" || true
+          cat check.txt
+          grep -q "^OK" check.txt
           cd dist && ditto -c -k --keepParent "TBS Reel.app" TBS-Reel-Mac.zip
       - name: Keep the build (downloadable from this run's page)
         uses: actions/upload-artifact@v4

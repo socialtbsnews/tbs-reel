@@ -6,6 +6,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import fribidi_loader  # noqa: E402
 from PIL import Image, features  # noqa: E402
 
 from reel_core import (H, W, ReelSettings, ffmpeg_exe, headline_font, make_item, make_reel,  # noqa: E402
@@ -15,7 +16,8 @@ from reel_core import (H, W, ReelSettings, ffmpeg_exe, headline_font, make_item,
 assert features.check("raqm"), "Pillow has no Raqm text shaping: Bangla would render wrongly"
 f = headline_font(60)
 assert f.getlength("ক্ষ") < f.getlength("ক") + f.getlength("্") + f.getlength("ষ") - 5, "Bangla is not being shaped"
-print("Bangla shaping OK (raqm", features.version("raqm"), ")")
+print("Bangla shaping OK (raqm", features.version("raqm"), "fribidi", features.version("fribidi"),
+      "loaded from", fribidi_loader.LOADED or "the system", ")")
 
 s = ReelSettings(date_text="25 OCTOBER | 2026", credit_text="Video: Test",
                  headline=[["অবৈধ পার্কিংয়ে ", False, False], ["‘ভিডিও মামলা’", True, True], [" and English", False, True]],
