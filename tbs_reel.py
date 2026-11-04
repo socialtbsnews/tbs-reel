@@ -229,7 +229,7 @@ class App:
         self.head = tk.Text(left, height=4, wrap="word", bg=PANEL, fg=INK, insertbackground=INK, relief="flat",
                             font=(TEXT_FONT, 13), undo=True, padx=6, pady=5, selectbackground="#3B5A78")
         self.head.tag_configure("hl", foreground=YELLOW_UI)
-        self.ui_fonts = {"en": TEXT_FONT, "bn": TEXT_FONT}
+        self.ui_fonts = {"en": TEXT_FONT, "bn": TEXT_FONT, "top": TEXT_FONT}
         self.head.pack(fill="x")
         self.head.bind("<<Modified>>", self.headline_edited)
         r = tk.Frame(left, bg=BG); r.pack(fill="x", pady=(5, 0))
@@ -248,6 +248,7 @@ class App:
         self._section(left, "FONTS")
         self.bn_menu = self._combo_row(left, "Bangla", self.font_changed)
         self.en_menu = self._combo_row(left, "English", self.font_changed)
+        self.top_menu = self._combo_row(left, "Date/credit", self.font_changed)
         self.hsize_var = tk.DoubleVar(self.root, value=self.s.head_size_pct)
         self._slider(left, "Size", self.hsize_var, 60, 140)
         r = tk.Frame(left, bg=BG); r.pack(fill="x", pady=(4, 0))
@@ -403,7 +404,7 @@ class App:
 
     def _combo_row(self, parent, label, cmd):
         r = tk.Frame(parent, bg=BG); r.pack(fill="x", pady=2)
-        tk.Label(r, text=label, width=7, anchor="w", bg=BG, fg=INK, font=FONT).pack(side="left")
+        tk.Label(r, text=label, width=10, anchor="w", bg=BG, fg=INK, font=FONT).pack(side="left")
         m = ttk.Combobox(r, state="readonly", font=FONT)
         m.bind("<<ComboboxSelected>>", lambda e: cmd())
         m.pack(side="left", fill="x", expand=True)
@@ -480,9 +481,13 @@ class App:
         self.fill_font_menus()
         self.apply_ui_fonts()
         mine = [n for n, f in fams.items() if f.source != "built in"]
-        found = [n for n in ("BiblioMono", "FF Meta Serif Pro") if n in fams]
+        found = [n for n in ("BiblioMono", "FF Meta Serif Pro", "November Condensed LCG") if n in fams]
         self.font_note.config(text=("Found " + " and ".join(found)) if found else
                               (f"{len(mine)} fonts from this computer" if mine else "Using the built-in fonts"))
+        missing = [n for n in ("BiblioMono", "FF Meta Serif Pro", "November Condensed LCG") if n not in fams]
+        if missing:
+            self.set_status("Not found on this computer: " + ", ".join(missing) +
+                            ". Install them, or click Add fonts… and pick the font files.")
         self._ov_key = None
         self.refresh()
 
@@ -492,16 +497,19 @@ class App:
         en = sorted([n for n, f in fams.items() if f.latin], key=str.lower)
         self.bn_menu.config(values=bn)
         self.en_menu.config(values=en)
-        for menu, names, attr, is_bn in ((self.bn_menu, bn, "bangla_font", True),
-                                         (self.en_menu, en, "english_font", False)):
+        self.top_menu.config(values=en)
+        for menu, names, attr, is_bn, prefs in ((self.bn_menu, bn, "bangla_font", True, None),
+                                                (self.en_menu, en, "english_font", False, None),
+                                                (self.top_menu, en, "top_font", False, fontlib.PREFERRED_TOP)):
             want = getattr(self.s, attr)
             if want not in names:
-                want = fontlib.pick_default(fams, is_bn)
+                want = fontlib.pick_default(fams, is_bn, prefs)
             menu.set(want)
 
     def font_changed(self):
         self.s.bangla_font = self.bn_menu.get()
         self.s.english_font = self.en_menu.get()
+        self.s.top_font = self.top_menu.get()
         self.apply_ui_fonts()
         self.save()
         self.refresh()
@@ -552,7 +560,7 @@ class App:
     # ---- show the chosen fonts in the typing boxes too
     def apply_ui_fonts(self):
         fams = self.families
-        for key, menu in (("en", self.en_menu), ("bn", self.bn_menu)):
+        for key, menu in (("en", self.en_menu), ("bn", self.bn_menu), ("top", self.top_menu)):
             f = fams.get(menu.get())
             name = TEXT_FONT
             if f is not None:
@@ -569,7 +577,7 @@ class App:
             self.head.tag_configure(tag, font=(fam, 14, weight))
         self.head.tag_raise("hl")
         for e in getattr(self, "entries", []):
-            e.config(font=(en, 12))
+            e.config(font=(self.ui_fonts["top"], 13))
         self.retag_fonts()
 
     def retag_fonts(self):

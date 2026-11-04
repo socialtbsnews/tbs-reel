@@ -34,8 +34,9 @@ Makes reels in the TBS reel frame: 1080 x 1350 (4:5), 30 fps MP4, from photos an
 - Optional **TBS end card** (off by default).
 
 ## Fonts
-The app looks for fonts installed on the computer (for example **BiblioMono** for Bangla and
-**FF Meta Serif Pro** for English) and picks those first. Fonts can also be added inside the app
+The app looks for fonts installed on the computer and picks TBS's fonts first:
+**BiblioMono** (Bangla), **FF Meta Serif Pro** (English headline) and **November Condensed LCG**
+(date and credit). The typing boxes show the chosen fonts too. Fonts can also be added inside the app
 with **Add fonts…** (they are copied to `~/.tbs_reel_fonts` and stay available).
 Paid fonts are not stored in this repository.
 

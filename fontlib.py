@@ -20,6 +20,7 @@ CACHE = os.path.join(os.path.expanduser("~"), ".tbs_reel_fontcache.json")
 FONT_EXT = (".ttf", ".otf", ".ttc")
 PREFERRED_BANGLA = ["BiblioMono", "Noto Sans Bengali"]
 PREFERRED_ENGLISH = ["FF Meta Serif Pro", "FF Meta Serif", "Noto Serif"]
+PREFERRED_TOP = ["November Condensed LCG", "November Condensed", "Roboto Condensed"]   # date and credit
 
 
 @dataclass
@@ -160,8 +161,8 @@ def add_font_files(paths: list[str]) -> list[str]:
     return added
 
 
-def pick_default(fams: dict[str, Family], bangla: bool) -> str:
-    prefs = PREFERRED_BANGLA if bangla else PREFERRED_ENGLISH
+def pick_default(fams: dict[str, Family], bangla: bool, prefs: list[str] | None = None) -> str:
+    prefs = prefs or (PREFERRED_BANGLA if bangla else PREFERRED_ENGLISH)
     for want in prefs:
         for name, f in fams.items():
             if name.lower() == want.lower() and (f.bangla if bangla else f.latin):

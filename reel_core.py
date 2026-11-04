@@ -40,8 +40,8 @@ AUDIO_EXT = {".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".opus", ".wma"}
 # ---- the TBS reel frame (measured from the design, 1080 x 1350)
 LOGO_BOX = (64, 69, 78)              # x, y, size of the round logo
 TOP_RIGHT = 1016                     # right edge of the date and credit
-DATE_BASELINE, DATE_SIZE = 102, 29
-CREDIT_BASELINE, CREDIT_SIZE = 131, 22
+DATE_BASELINE, DATE_SIZE = 102, 30      # sized so November Condensed matches the design
+CREDIT_BASELINE, CREDIT_SIZE = 131, 24
 HEAD_CENTER_Y = 1056                 # middle of the headline block
 HEAD_SIZE = 72                       # headline font size at 100% (shrinks if the text is long)
 HEAD_LINE = 1.32                     # line spacing, as a multiple of the font size
@@ -99,6 +99,7 @@ class ReelSettings:
     headline: list = field(default_factory=list)   # [[text, highlighted, bold], ...]
     bangla_font: str = ""         # font family for Bangla letters (empty = best available)
     english_font: str = ""        # font family for English letters
+    top_font: str = ""            # font family for the date and credit (English letters)
     head_size_pct: float = 100.0  # headline size
     music_path: str = ""
     music_volume_pct: float = 70.0
@@ -246,11 +247,11 @@ def families() -> dict:
     return _FAMILIES
 
 
-def _family(name: str, bangla: bool):
+def _family(name: str, bangla: bool, prefs=None):
     fams = families()
     f = fams.get(name)
     if f is None or not (f.bangla if bangla else f.latin):
-        f = fams.get(fontlib.pick_default(fams, bangla))
+        f = fams.get(fontlib.pick_default(fams, bangla, prefs))
     return f
 
 
@@ -275,9 +276,9 @@ def _balance(path: str, bangla: bool) -> float:
         return 1.0
 
 
-def get_font(family: str, bangla: bool, bold: bool, size: int):
+def get_font(family: str, bangla: bool, bold: bool, size: int, prefs=None):
     """(font, extra stroke width for a fake bold)."""
-    f = _family(family, bangla)
+    f = _family(family, bangla, prefs)
     if f is None:
         return ImageFont.load_default(max(6, size)), 0
     path = f.bold if bold else f.regular
@@ -325,12 +326,15 @@ class Span:
     stroke: int
 
 
-def _spans(pieces, s: "ReelSettings", size: int, default_bold: bool = False) -> list[Span]:
+def _spans(pieces, s: "ReelSettings", size: int, default_bold: bool = False, top: bool = False) -> list[Span]:
     """pieces: [(text, highlighted, bold)] -> drawable spans with the right font for each script."""
     spans: list[Span] = []
     for text, hl, bold in pieces:
         for t, bn in script_runs(text):
-            fnt, stroke = get_font(s.bangla_font if bn else s.english_font, bn, bool(bold or default_bold), size)
+            if top and not bn:
+                fnt, stroke = get_font(s.top_font, False, bool(bold or default_bold), size, fontlib.PREFERRED_TOP)
+            else:
+                fnt, stroke = get_font(s.bangla_font if bn else s.english_font, bn, bool(bold or default_bold), size)
             color = YELLOW if hl else WHITE
             if spans and spans[-1].font is fnt and spans[-1].color == color and spans[-1].stroke == stroke:
                 spans[-1].text += t
@@ -459,7 +463,7 @@ def overlay(s: ReelSettings, w: int = W, h: int = H) -> Image.Image:
     for text, base, size in (((s.date_text or today_text()).strip(), DATE_BASELINE, DATE_SIZE),
                              (s.credit_text.strip(), CREDIT_BASELINE, CREDIT_SIZE)):
         if text and not text.endswith(":"):
-            spans = _spans([(text, False, False)], s, size)
+            spans = _spans([(text, False, False)], s, size, top=True)
             _draw_spans(layer, TOP_RIGHT - _spans_width(spans), base, spans, shadow=True)
     size, lines = layout_headline(s)
     if lines:
