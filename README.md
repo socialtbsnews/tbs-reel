@@ -1,7 +1,9 @@
 # TBS Reel (desktop app)
 
 Makes reels in the TBS frame from photos and video clips, as a 30 fps MP4 in two sizes:
-**9:16 reel (1080 x 1920)** or **4:5 post (1080 x 1350)** (pick under SIZE).
+**9:16 reel (1080 x 1920)**, **4:5 post (1080 x 1350)** or **16:9 landscape (1920 x 1080)** (pick under SIZE).
+All three have the same logo, date, credit, headline, dark shade and teal strip. In landscape, upright
+phone videos are shown whole over a blurred copy of themselves.
 
 **Download:** [Windows](https://github.com/socialtbsnews/tbs-reel/releases/latest/download/TBS-Reel-Windows.exe) ·
 [Mac](https://github.com/socialtbsnews/tbs-reel/releases/latest/download/TBS-Reel-Mac.zip)

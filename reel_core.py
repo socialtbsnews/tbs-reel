@@ -44,10 +44,13 @@ AUDIO_EXT = {".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".opus", ".wma"}
 # ---- the two TBS frames. The 4:5 one is measured from the design; the 9:16 one from
 #      TBS's published reels (logo and date kept clear of the app buttons at the top).
 LAYOUTS = {
-    "reel": dict(label="9:16 reel  (1080 x 1920)", w=1080, h=1920,
+    "reel": dict(label="9:16 reel  1080x1920", w=1080, h=1920,
                  logo=(88, 236, 88), right=992, date=(298, 36), credit=(334, 28),
                  head_y=0.80, head_size=62, margin=88, shade=30, dark=80, strip=28),
-    "feed": dict(label="4:5 post  (1080 x 1350)", w=1080, h=1350,
+    "wide": dict(label="16:9 landscape  1920x1080", w=1920, h=1080,
+                 logo=(72, 56, 92), right=1848, date=(98, 36), credit=(132, 28),
+                 head_y=0.80, head_size=66, margin=72, head_w=1640, shade=30, dark=76, strip=20),
+    "feed": dict(label="4:5 post  1080x1350", w=1080, h=1350,
                  logo=(64, 69, 78), right=1016, date=(102, 30), credit=(131, 24),
                  head_y=0.782, head_size=72, margin=60, shade=30, dark=76, strip=20),
 }
@@ -247,10 +250,15 @@ def load_photo(path: str, max_side: int = 0) -> Image.Image:
 
 
 # ---------------------------------------------------------------- picture framing
-def resolve_framing(framing: str, pic_w: int, pic_h: int) -> str:
-    """Auto: wide pictures sit full-width at the top; the rest fill the frame."""
+def resolve_framing(framing: str, pic_w: int, pic_h: int, frame_aspect: float = W / H) -> str:
+    """Auto: pictures much wider than the frame sit full-width at the top; the rest fill the frame."""
     if framing == "auto":
-        return "top" if pic_w and pic_h and pic_w / pic_h > TOP_WIDE_LIMIT else "fill"
+        if not (pic_w and pic_h):
+            return "fill"
+        a = pic_w / pic_h
+        if a > TOP_WIDE_LIMIT * frame_aspect / 0.8:
+            return "top"
+        return "fit" if a < frame_aspect / 1.6 else "fill"   # e.g. an upright phone video in a landscape frame
     return framing
 
 
@@ -287,7 +295,7 @@ def frame_picture(img: Image.Image, framing: str, w: int = W, h: int = H) -> Ima
     """Put a picture of any shape onto the w x h frame.
     fill = crop to fill; top = full width at the top over a blurred copy;
     fit = whole picture in the middle over a blurred copy."""
-    framing = resolve_framing(framing, img.width, img.height)
+    framing = resolve_framing(framing, img.width, img.height, w / h)
     if framing == "fill":
         return _cover(img, w, h)
     bg = _blur_bg(img, w, h)
@@ -315,7 +323,7 @@ def picture_filter(item: Item, framing: str, w: int, h: int, fps: int) -> str:
                                    item.meta.get("cy", 0.5))
         return (f"[0:v]fps={fps},crop=trunc(iw*{cw / sw:.5f}/2)*2:trunc(ih*{ch / sh:.5f}/2)*2:"
                 f"iw*{x / sw:.5f}:ih*{y / sh:.5f},scale={w}:{h},setsar=1[pic]")
-    mode = resolve_framing(framing, item.meta.get("width", 0), item.meta.get("height", 0))
+    mode = resolve_framing(framing, item.meta.get("width", 0), item.meta.get("height", 0), w / h)
     if mode == "fill":
         return f"[0:v]fps={fps},scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},setsar=1[pic]"
     y = "0" if mode == "top" else "(H-h)/2"
@@ -571,7 +579,7 @@ def _wrap(lines, width_of, max_w):
 def layout_headline(s: "ReelSettings"):
     """Font size and wrapped lines (as spans); shrinks until it fits in HEAD_MAX_LINES lines."""
     L = lay(s)
-    max_w = L["w"] - 2 * L["margin"]
+    max_w = min(L["w"] - 2 * L["margin"], L.get("head_w", 99999))
     lines = _tokens(s.headline)
     if not any(not p[0].isspace() for ln in lines for p in ln):
         return L["head_size"], []
@@ -651,13 +659,14 @@ def end_card_frame(t: float, total: float, logo_path: str = "", w: int = W, h: i
     ease = 1 - (1 - p) ** 3
     logo = _logo(logo_path)
     if logo is not None:
-        lw = round(w * (0.34 + 0.04 * ease))
+        base = min(w, round(h * 0.8))          # same look in every size
+        lw = round(base * (0.34 + 0.04 * ease))
         m = logo.resize((lw, round(logo.height * lw / logo.width)), Image.LANCZOS)
         m.putalpha(m.getchannel("A").point(lambda a: round(a * ease)))
         img.paste(m, ((w - lw) // 2, round(h * 0.42 - m.height / 2)), m)
         try:
             bm = Image.open(resource("assets", "brand.png")).convert("RGBA")
-            bw = round(w * 0.70)
+            bw = round(base * 0.70)
             b = bm.resize((bw, round(bm.height * bw / bm.width)), Image.LANCZOS)
             b.putalpha(b.getchannel("A").point(lambda a: round(a * ease)))
             img.paste(b, ((w - bw) // 2, round(h * 0.42 + m.height / 2 + 60)), b)
@@ -889,22 +898,26 @@ def _warning_sign(size: int) -> Image.Image:
 def disclaimer_card(key: str, s: ReelSettings, w: int, h: int) -> Image.Image:
     """The disclaimer as a full picture (w x h)."""
     D = DISCLAIMERS[key]
-    k = w / 1080
     img = Image.new("RGBA", (w, h), (13, 13, 13, 255))
-    title_f = get_font(s.english_font, False, True, round(54 * k))[0]
-    sub_f = get_font(s.english_font, False, False, round(38 * k))[0]
-    body_f, body_stroke, fake_slant = get_font_style(s.english_font, D["bold"], D["italic"], round(34 * k))
-    max_w = w - round(150 * k)
-    pitch = round(34 * k * 1.62)
-    body_lines: list[str | None] = []
-    for para in D["body"]:
-        body_lines += _wrap_text(para, body_f, max_w)
-    sign = _warning_sign(round(230 * k))
-    title_lines = _wrap_text(D["title"], title_f, max_w)
-    tp = round(54 * k * 1.3)
-    gap1, gap2, gap3 = round(56 * k), round(46 * k), round(40 * k)
-    block = sign.height + gap1 + tp * len(title_lines) + (gap2 + round(38 * k) if D["sub"] else 0) + gap3 + \
-        pitch * len(body_lines)
+    k = min(w, h * 1.25) / 1080
+    while True:                        # shrink a little if it would not fit (landscape)
+        title_f = get_font(s.english_font, False, True, round(54 * k))[0]
+        sub_f = get_font(s.english_font, False, False, round(38 * k))[0]
+        body_f, body_stroke, fake_slant = get_font_style(s.english_font, D["bold"], D["italic"], round(34 * k))
+        max_w = min(w - round(150 * k), round(1300 * k))
+        pitch = round(34 * k * 1.62)
+        body_lines: list[str | None] = []
+        for para in D["body"]:
+            body_lines += _wrap_text(para, body_f, max_w)
+        sign = _warning_sign(round(230 * k))
+        title_lines = _wrap_text(D["title"], title_f, max_w)
+        tp = round(54 * k * 1.3)
+        gap1, gap2, gap3 = round(56 * k), round(46 * k), round(40 * k)
+        block = sign.height + gap1 + tp * len(title_lines) + (gap2 + round(38 * k) if D["sub"] else 0) + gap3 + \
+            pitch * len(body_lines)
+        if block <= h * 0.92 or k < 0.4:
+            break
+        k *= 0.94
     y = (h - block) / 2
     img.alpha_composite(sign, ((w - sign.width) // 2, round(y)))
     y += sign.height + gap1

@@ -56,7 +56,7 @@ MEDIA_TYPES = [("Photos and videos", " ".join(f"*{e}" for e in sorted(PHOTO_EXT 
 MUSIC_TYPES = [("Music", " ".join(f"*{e}" for e in sorted(AUDIO_EXT)))]
 FONT_TYPES = [("Fonts", "*.ttf *.otf *.ttc *.TTF *.OTF")]
 SIZES = {k: v["label"] for k, v in rc.LAYOUTS.items()}
-FRAMING = {"auto": "Auto (wide videos at the top)", "fill": "Fill the frame (crops the sides)",
+FRAMING = {"auto": "Auto (best for each clip)", "fill": "Fill the frame (crops the sides)",
            "top": "Full width at the top", "fit": "Whole picture in the middle"}
 MOTION = {"zoom": "Gentle zoom", "none": "Still"}
 DISCLAIMER = {"": "None", **{k: v["label"] for k, v in rc.DISCLAIMERS.items()}}
